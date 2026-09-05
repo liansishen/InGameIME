@@ -2,6 +2,10 @@
 
 InGameIME 是 Minecraft 1.7.10 Forge 客户端的 librime 前端。它在原版聊天框中处理 Rime 按键、提交文本，并显示预编辑文本和候选项。
 
+- 作者：[liansishen](https://github.com/liansishen)
+- 仓库：[github.com/liansishen/ingameime](https://github.com/liansishen/ingameime)
+- 许可证：[MIT](LICENSE)
+
 发布产物只有一个模组 JAR。它不会捆绑、下载、解压或更新 JNA、librime、原生依赖、插件、输入方案、词典或 Weasel。
 
 ## 当前范围
