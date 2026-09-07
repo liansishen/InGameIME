@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+import net.minecraft.client.Minecraft;
+
 import dev.ingameime.Config;
 
 public final class RimeRuntimeConfig {
@@ -28,27 +30,40 @@ public final class RimeRuntimeConfig {
     }
 
     public static RimeRuntimeConfig resolve() {
-        File nativeDirectory = existingDirectory(Config.nativeLibraryDirectory, "nativeLibraryDirectory");
+        return resolve(Minecraft.getMinecraft().mcDataDir);
+    }
+
+    static RimeRuntimeConfig resolve(File gameDirectory) {
+        File instanceRoot = new File(gameDirectory, "ingameime");
+        File nativeDirectory = configuredOrDefault(
+            Config.nativeLibraryDirectory,
+            new File(instanceRoot, "native"),
+            "nativeLibraryDirectory");
         File nativeLibrary = new File(nativeDirectory, platformLibraryName());
         if (!nativeLibrary.isFile()) {
             throw new IllegalArgumentException("librime was not found at " + nativeLibrary.getAbsolutePath());
         }
 
+        String configuredUserPath = Config.userDataDirectory.trim();
+        boolean instanceUserDirectory = configuredUserPath.isEmpty() && !Config.autoDetectSystemData;
         File userDirectory;
-        if (!Config.userDataDirectory.trim()
-            .isEmpty()) {
-            userDirectory = existingDirectory(Config.userDataDirectory, "userDataDirectory");
+        if (!configuredUserPath.isEmpty()) {
+            userDirectory = existingDirectory(configuredUserPath, "userDataDirectory");
         } else if (Config.autoDetectSystemData) {
-            userDirectory = detectSystemUserDirectory();
+            userDirectory = findSystemUserDataDirectory();
             if (userDirectory == null) {
                 throw new IllegalArgumentException("no existing system Rime user directory was detected");
             }
         } else {
-            throw new IllegalArgumentException("userDataDirectory is empty and automatic detection is disabled");
+            userDirectory = existingDirectory(new File(instanceRoot, "user").getPath(), "userDataDirectory");
         }
 
         File sharedDirectory = Config.sharedDataDirectory.trim()
-            .isEmpty() ? userDirectory : existingDirectory(Config.sharedDataDirectory, "sharedDataDirectory");
+            .isEmpty()
+                ? instanceUserDirectory
+                    ? existingDirectory(new File(instanceRoot, "shared").getPath(), "sharedDataDirectory")
+                    : userDirectory
+                : existingDirectory(Config.sharedDataDirectory, "sharedDataDirectory");
         List<String> modules = parseModules(Config.requiredModules);
         return new RimeRuntimeConfig(
             nativeLibrary.getAbsoluteFile(),
@@ -76,6 +91,11 @@ public final class RimeRuntimeConfig {
 
     public List<String> getRequiredModules() {
         return requiredModules;
+    }
+
+    private static File configuredOrDefault(String configuredPath, File fallback, String propertyName) {
+        String path = configuredPath.trim();
+        return existingDirectory(path.isEmpty() ? fallback.getPath() : path, propertyName);
     }
 
     private static File existingDirectory(String configuredPath, String propertyName) {
@@ -106,7 +126,7 @@ public final class RimeRuntimeConfig {
         throw new IllegalArgumentException("unsupported operating system: " + System.getProperty("os.name"));
     }
 
-    private static File detectSystemUserDirectory() {
+    public static File findSystemUserDataDirectory() {
         String osName = System.getProperty("os.name", "")
             .toLowerCase(Locale.ROOT);
         List<File> candidates = new ArrayList<>();

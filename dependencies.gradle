@@ -35,4 +35,63 @@
  */
 dependencies {
     compileOnly("net.java.dev.jna:jna:5.14.0")
+
+    // GTNH 2.9.0 beta 3 development environment. These mods are available to runClient but are not published as dependencies.
+    devOnlyNonPublishable("com.github.GTNewHorizons:GTNHLib:0.11.46:dev")
+    devOnlyNonPublishable("com.github.GTNewHorizons:CodeChickenCore:1.4.19:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:StructureLib:1.4.42:dev") { transitive = false }
+    devOnlyNonPublishable("net.industrial-craft:industrialcraft-2:2.2.828-experimental:dev") { transitive = false }
+    devOnlyNonPublishable("com.falsepattern:chunkapi-mc1.7.10:0.8.4:dev") { transitive = false }
+    devOnlyNonPublishable("com.falsepattern:endlessids-mc1.7.10:1.7.4:dev")
+    devOnlyNonPublishable("com.github.GTNewHorizons:waila:1.19.34:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:Baubles-Expanded:2.2.22-GTNH:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:Postea:1.2.6:dev") { transitive = false }
+    devOnlyNonPublishable(rfg.deobf("curse.maven:cofh-core-69162:2388751")) { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:AE2FluidCraft-Rework:1.5.106-gtnh:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:Draconic-Evolution:1.5.33-GTNH:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:Hodgepodge:2.7.196:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:ModularUI:1.3.4:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:ModularUI2:2.3.88-1.7.10:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:lwjgl3ify:3.0.31:api") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:Mantle:0.5.4:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:ForgeMultipart:1.7.12:dev") { transitive = false }
+
+    devOnlyNonPublishable("com.github.GTNewHorizons:NotEnoughItems:2.8.130-GTNH:dev")
+    testImplementation("com.github.GTNewHorizons:NotEnoughItems:2.8.130-GTNH:dev")
+    devOnlyNonPublishable("com.github.GTNewHorizons:Applied-Energistics-2-Unofficial:rv3-beta-1050-GTNH:dev") {
+        transitive = false
+    }
+    devOnlyNonPublishable("com.github.GTNewHorizons:TinkersConstruct:1.14.108-GTNH:dev") { transitive = false }
+    devOnlyNonPublishable("com.github.GTNewHorizons:GT5-Unofficial:5.09.54.133:dev") { transitive = false }
+    runtimeOnlyNonPublishable("io.github.legacymoddingmc:unimixins:0.3.1:dev") { transitive = false }
+    runtimeOnlyNonPublishable("com.github.GTNewHorizons:Angelica:2.2.10:dev")
+    devOnlyNonPublishable(rfg.deobf("curse.maven:bibliocraft-228027:2423369")) { transitive = false }
+    testImplementation(rfg.deobf("curse.maven:bibliocraft-228027:2423369")) { transitive = false }
+    devOnlyNonPublishable("com.github.liansishen:ClipboardAnywhere:0.2.0") {
+        transitive = false
+        artifact {
+            name = "clipboardanywhere"
+            classifier = "dev"
+            type = "jar"
+        }
+    }
+    testImplementation("com.github.liansishen:ClipboardAnywhere:0.2.0") {
+        transitive = false
+        artifact {
+            name = "clipboardanywhere"
+            classifier = "dev"
+            type = "jar"
+        }
+    }
+    runtimeOnlyNonPublishable("com.github.liansishen:TomsStorageNH:0.1.1") {
+        transitive = false
+        artifact {
+            name = "tomsstorage"
+            classifier = "dev"
+            type = "jar"
+        }
+    }
+    shadowImplementation("io.github.biezhi:TinyPinyin:2.0.3.RELEASE")
+    testImplementation("junit:junit:4.13.2")
+    testRuntimeOnly("org.lwjgl.lwjgl:lwjgl:2.9.3")
 }

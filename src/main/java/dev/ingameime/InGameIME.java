@@ -13,11 +13,13 @@ import cpw.mods.fml.common.event.FMLPreInitializationEvent;
     version = Tags.VERSION,
     name = InGameIME.MOD_NAME,
     acceptedMinecraftVersions = "[1.7.10]",
+    guiFactory = InGameIME.GUI_FACTORY,
     acceptableRemoteVersions = "*")
 public final class InGameIME {
 
     public static final String MOD_ID = "ingameime";
     public static final String MOD_NAME = "InGameIME";
+    public static final String GUI_FACTORY = "dev.ingameime.client.gui.InGameImeGuiFactory";
     public static final Logger LOG = LogManager.getLogger(MOD_ID);
 
     @SidedProxy(clientSide = "dev.ingameime.ClientProxy", serverSide = "dev.ingameime.CommonProxy")

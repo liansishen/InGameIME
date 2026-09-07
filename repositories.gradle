@@ -1,5 +1,18 @@
 // Add any additional repositories for your dependencies here.
 
 repositories {
+    ivy {
+        name = "LiansishenGitHubReleases"
+        url = uri("https://github.com/liansishen")
+        patternLayout {
+            artifact("[module]/releases/download/[revision]/[artifact]-[revision]-[classifier].[ext]")
+        }
+        metadataSources {
+            artifact()
+        }
+        content {
+            includeGroup("com.github.liansishen")
+        }
+    }
 
 }

@@ -1,111 +1,168 @@
 # InGameIME
 
-InGameIME 是 Minecraft 1.7.10 Forge 客户端的 librime 前端。它在原版聊天框中处理 Rime 按键、提交文本，并显示预编辑文本和候选项。
+InGameIME 是 Minecraft 1.7.10 Forge 的客户端 Rime 输入法前端，可在游戏输入框中使用 Rime 输入中文，并在输入框附近显示预编辑文本和候选项。
 
-- 作者：[liansishen](https://github.com/liansishen)
-- 仓库：[github.com/liansishen/ingameime](https://github.com/liansishen/ingameime)
-- 许可证：[MIT](LICENSE)
+## 功能
 
-发布产物只有一个模组 JAR。它不会捆绑、下载、解压或更新 JNA、librime、原生依赖、插件、输入方案、词典或 Weasel。
+- 支持 Rime 方案、候选选择、翻页和方案切换。
+- 支持中英文模式切换，可配置打开输入框时使用的模式。
+- 可显示当前输入模式、方案切换提示和候选注释。
+- 已接入原版输入框，以及 NotEnoughItems、Applied Energistics 2、ModularUI、ModularUI 2、BiblioCraft 和 ClipboardAnywhere 的输入框。
+- 可为 Rime Ice 的全拼和小鹤双拼方案生成游戏物品名称词库。
+- 仅需安装在客户端；输入法不可用时保留原版输入行为。
 
-## 当前范围
+## 运行要求
 
-- 仅接入原版 `GuiChat` 聊天框。
-- 使用用户安装的 JNA 和 librime，不调用 Weasel、Fcitx5 或 IBus 的进程接口。
-- 支持 librime 可部署的通用 Rime 方案；`schemaId` 为空时使用 Rime 默认方案。
-- 可按配置检查方案必需的 librime 模块，例如 `lua` 或 `octagram`。
-- 任一外部依赖、目录、部署、模块、方案或 session 检查失败时完全旁路，原版输入保持不变。
+- Minecraft `1.7.10`
+- Minecraft Forge `10.13.4.1614`
+- [JNA `5.14.0`](https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.14.0/)
+- [librime](https://github.com/rime/librime) 及其原生依赖
+- 可用的 Rime 共享数据、用户数据和输入方案
 
-## 手动安装
+librime 必须与运行 Minecraft 的 JVM 架构一致。InGameIME 的发布 JAR 不包含 JNA、librime、输入方案或词典。
 
-1. 安装 Minecraft 1.7.10 Forge `10.13.4.1614`，把 InGameIME JAR 放入客户端的 `mods` 目录。
-2. 从 [JNA 官方仓库](https://github.com/java-native-access/jna) 或 [Maven Central](https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.14.0/) 获取 `jna-5.14.0.jar`，使它位于游戏运行时 classpath。Forge 1.7.10 客户端通常可以从 `mods` 目录加载该 JAR。
-3. 从 [librime 官方仓库](https://github.com/rime/librime) 或其 [Releases](https://github.com/rime/librime/releases) 安装与 JVM 位数一致的 librime，并保留它需要的原生动态库。不要把这些文件放进 InGameIME JAR。
-4. 准备一个已经存在的 Rime 用户数据目录。最基础的验证可以使用 librime 官方 [`data/minimal`](https://github.com/rime/librime/tree/master/data/minimal) 中不依赖 Lua 的 `luna_pinyin` 数据。
-5. 首次启动一次游戏以生成 `config/ingameime.cfg`，退出后填写下面的路径并重新启动。
+## 安装
 
-Windows 示例使用正斜杠，避免配置文件中的反斜杠转义：
+下面的“游戏实例目录”是 `mods`、`config` 等目录所在的位置。
+
+### 1. JNA
+
+- **直接下载：**[`jna-5.14.0.jar`](https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.14.0/jna-5.14.0.jar)
+- **文件列表和校验文件：**[Maven Central](https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.14.0/)
+- **放置位置：**`<游戏实例目录>/mods/jna-5.14.0.jar`
+
+只需要 `jna-5.14.0.jar`。名称中带 `sources` 或 `javadoc` 的 JAR、Android 使用的 AAR 和 `jna-platform` 都不能替代它。
+
+### 2. librime
+
+InGameIME 当前使用 librime `1.17.0` 验证。下载的原生库必须与**启动 Minecraft 的 JVM 架构**一致，而不是只看 Windows 本身是 64 位还是 32 位。
+
+#### Windows
+
+从下表选择一个主包：
+
+| JVM 架构 | 下载 | 从压缩包复制 | 放置位置 |
+|---|---|---|---|
+| 64 位 | [`rime-33e7814-Windows-msvc-x64.7z`](https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Windows-msvc-x64.7z) | `dist/lib/rime.dll` | `<游戏实例目录>/ingameime/native/rime.dll` |
+| 32 位 | [`rime-33e7814-Windows-msvc-x86.7z`](https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-Windows-msvc-x86.7z) | `dist/lib/rime.dll` | `<游戏实例目录>/ingameime/native/rime.dll` |
+
+大多数现代启动器使用 64 位 JVM，应选择 x64 包。这里需要的是文件名以 `rime-` 开头的主包，不是用于开发和链接的 `rime-deps-` 包。
+
+#### macOS
+
+- **下载：**[`rime-33e7814-macOS-universal.tar.bz2`](https://github.com/rime/librime/releases/download/1.17.0/rime-33e7814-macOS-universal.tar.bz2)
+- **放置位置：**将压缩包中 `dist/lib` 下的动态库复制到 `<游戏实例目录>/ingameime/native/`，保留 `rime-plugins` 子目录；主库最终路径必须是 `ingameime/native/librime.dylib`。
+
+#### Linux
+
+librime 1.17.0 的官方发布页没有提供 Linux 预编译包。请通过发行版软件源安装 librime，或按照 [librime 官方构建说明](https://github.com/rime/librime#build-and-install-on-linux)编译安装；可在 [Repology](https://repology.org/project/librime/versions) 查询各发行版的软件包。
+
+安装后，将 `nativeLibraryDirectory` 设置为直接包含 `librime.so` 的目录。也可以把 `librime.so`、它指向的版本化库文件和所需插件一起复制到 `<游戏实例目录>/ingameime/native/`。
+
+其他 librime 版本和发行文件可从 [librime Releases](https://github.com/rime/librime/releases) 获取。使用其他版本时，主库名称仍必须是 Windows 的 `rime.dll`、Linux 的 `librime.so` 或 macOS 的 `librime.dylib`。
+
+### 3. Rime 输入方案和词典
+
+推荐使用 Rime Ice，它同时提供全拼、小鹤双拼、基础配置和词典，也是游戏词库功能支持的方案。
+
+- **直接下载：**[Rime Ice `full.zip`](https://github.com/iDvel/rime-ice/releases/latest/download/full.zip)
+- **发布页：**[Rime Ice Releases](https://github.com/iDvel/rime-ice/releases)
+- **放置位置：**将 `full.zip` 内的**全部内容**直接解压到 `<游戏实例目录>/ingameime/user/`。
+
+解压后不应多出一层 `full` 或 `rime-ice` 目录。以下文件应能直接在 `ingameime/user` 中找到：
+
+```text
+ingameime/user/default.yaml
+ingameime/user/rime_ice.schema.yaml
+ingameime/user/double_pinyin_flypy.schema.yaml
+ingameime/user/rime_ice.dict.yaml
+```
+
+新实例中的 `ingameime/shared` 可以保持为空。更新已经使用过的 Rime 用户目录前，请先备份；Rime Ice 官方建议全量安装时清空旧配置后再复制新文件。
+
+Rime Ice 需要 Lua 模块。使用上述 librime Windows 1.17.0 主包时，在 InGameIME 配置中填写 `requiredModules=lua`；如果另外安装了语法模型，再加入 `octagram`。其他输入方案可从 [Rime 配置仓库索引](https://github.com/rime/home/wiki/RimeWithSchemata) 获取，并将方案文件及其依赖一起放入 `ingameime/user`。
+
+### 4. 检查目录并启动
+
+以 Windows 64 位和 Rime Ice 为例，最终目录应类似：
+
+```text
+<游戏实例目录>/
+├─ mods/
+│  ├─ ingameime-<版本>.jar
+│  └─ jna-5.14.0.jar
+└─ ingameime/
+   ├─ native/
+   │  └─ rime.dll
+   ├─ shared/
+   └─ user/
+      ├─ default.yaml
+      ├─ rime_ice.schema.yaml
+      ├─ double_pinyin_flypy.schema.yaml
+      ├─ rime_ice.dict.yaml
+      ├─ lua/
+      └─ opencc/
+```
+
+启动游戏后，在模组列表中打开 `InGameIME` -> `Config`。使用上面的实例内目录时，三个目录设置均保持为空，并设置：
 
 ```properties
 general {
-    B:autoDetectSystemData=false
     B:enabled=true
-    S:nativeLibraryDirectory=C:/Rime/bin
-    S:requiredModules=
-    S:schemaId=luna_pinyin
-    S:sharedDataDirectory=C:/Rime/data
-    S:userDataDirectory=C:/Users/you/AppData/Roaming/Rime
+    B:autoDetectSystemData=false
+    S:schemaId=rime_ice
+    S:requiredModules=lua
 }
 ```
 
-`nativeLibraryDirectory` 必须直接包含当前平台的主库：
+保存后重启客户端，在配置界面的“状态”页确认状态为“已启用”。需要使用小鹤双拼时，将 `schemaId` 改为 `double_pinyin_flypy` 后再次重启。
 
-- Windows：`rime.dll`
-- Linux：`librime.so`
-- macOS：`librime.dylib`
-
-该目录中的其他动态库仍须能被操作系统的动态加载器找到。Windows 通常把依赖 DLL 放在同一目录；Linux 和 macOS 应按发行包要求配置系统库搜索路径。
+如果已经有可用的 Rime 用户目录，也可以在配置界面中填写现有路径，不必把数据复制到游戏实例目录。
 
 ## 配置
 
-| 键 | 含义 |
+常用设置可在 Minecraft 的模组列表中打开 `InGameIME` -> `Config` 修改。配置文件位于 `config/ingameime.cfg`。
+
+| 设置 | 说明 |
 |---|---|
-| `enabled` | 总开关。为 `false` 时不加载 JNA 或 librime。 |
-| `nativeLibraryDirectory` | 包含 librime 主库和其原生依赖的既有目录。必填。 |
-| `userDataDirectory` | 既有 Rime 用户数据目录。留空时可自动检测。 |
-| `sharedDataDirectory` | 既有 Rime 共享数据目录。留空时使用选中的用户数据目录。 |
-| `autoDetectSystemData` | `userDataDirectory` 为空时，使用第一个检测到的系统 Rime 目录。 |
-| `schemaId` | 启动后选择的方案 ID。留空使用 Rime 当前默认方案。 |
-| `requiredModules` | 逗号分隔的必需模块名。留空表示方案不要求额外插件。 |
+| `enabled` | 启用或停用 InGameIME。 |
+| `modeSwitchKey` | 中英文切换方式：`shift`、`left_shift`、`ctrl_shift` 或 `disabled`。 |
+| `openInputMode` | 打开输入框时沿用上次模式，或固定为中文、英文。可选值为 `remember`、`chinese`、`english`。 |
+| `showModeIndicator` | 显示中英文模式提示。 |
+| `modeNoticeMillis` | 模式提示显示时间，范围为 1000 至 10000 毫秒。 |
+| `showSchemaNotice` | 切换方案后显示当前方案名称。 |
+| `showCandidateComments` | 显示 Rime 返回的候选注释。 |
+| `schemaId` | 启动时选择的 Rime 方案 ID；留空使用 Rime 默认方案。 |
+| `requiredModules` | 当前方案需要的 librime 模块，使用逗号分隔，例如 `lua,octagram`。 |
+| `nativeLibraryDirectory` | librime 主库所在目录；留空使用 `ingameime/native`。 |
+| `sharedDataDirectory` | Rime 共享数据目录；留空使用 `ingameime/shared`。 |
+| `userDataDirectory` | Rime 用户数据目录；留空使用 `ingameime/user`。 |
+| `autoDetectSystemData` | 用户数据目录留空时，尝试使用已安装桌面输入法的 Rime 用户目录。 |
 
-自动检测只接受已经存在的目录，不会创建目录。顺序如下：
+运行开关、数据目录、方案和模块设置在重启客户端后生效。复用桌面输入法的用户目录前，建议先备份其中的数据。
 
-- Windows：`%APPDATA%/Rime`、`%APPDATA%/Moqi/Rime`
-- macOS：`~/Library/Rime`
-- Linux：`$XDG_DATA_HOME/fcitx5/rime`、`$XDG_CONFIG_HOME/ibus/rime`、Fcitx5 Flatpak 数据目录
+## 使用
 
-显式配置的目录始终优先。共享正在使用的系统 Rime 用户目录可能产生部署文件、用户词典写入和数据库锁冲突；需要隔离时，应手动复制一份完整数据目录，并在没有其他 Rime 前端使用它时完成部署。
+打开受支持的输入框后即可按当前 Rime 方案输入。预编辑文本和候选项会显示在输入框附近，选词、翻页和提交按键由所用 Rime 方案决定。
 
-## 方案与插件
+默认短按任一 Shift 可切换中文和英文模式；长按 Shift 或与其他按键组合时保留原有按键行为。快捷键可在配置界面的“输入”页修改。
 
-基础方案不要求 Lua。白霜和其他复杂方案只是可选配置，不是 InGameIME 的实现或验证依赖。
+方案切换快捷键来自 Rime 配置。常见配置使用 `F4` 或 Ctrl + 反引号键打开方案菜单；实际按键以用户数据中的 `switcher` 和 `key_binder` 配置为准。
 
-### 方案热切换
+## 游戏词库
 
-方案热键来自用户数据中的 Rime `switcher` 和 `key_binder` 配置，不由模组硬编码。官方最小配置支持：
+游戏词库功能面向 [Rime Ice](https://github.com/iDvel/rime-ice) 的 `rime_ice` 和 `double_pinyin_flypy` 方案。对应方案文件需已安装在当前 Rime 用户目录中。
 
-- `F4` 或 `Control+grave` 打开方案菜单；
-- 方向键和 Enter，或候选数字键完成选择；
-- `Ctrl+Shift+1` 直接切换到下一个方案。
+在配置界面的“游戏词库”页点击“生成游戏词库”，InGameIME 会扫描已注册物品的中文名称，并生成全拼和小鹤双拼词库。生成成功后会自动重新加载当前方案，使新词库立即生效；界面提示无法热重载时，请重启客户端。
 
-切换成功后，聊天框上方会短暂显示实际生效的方案名称。Rime switcher 使用的内部 `.default` 状态不会被当作用户方案。组合状态下的 Rime 控制键优先交给 librime；没有预编辑或候选时，原版 `Ctrl+A/C/V/X` 行为保持不变。
+## 故障排查
 
-当某个方案确实依赖插件时，在 `requiredModules` 中声明模块，例如：
+- 在配置界面的“状态”页查看运行状态、当前方案和停用原因。
+- 检查 `logs/latest.log` 中带有 `ingameime` 的日志，确认 JNA、librime、原生依赖、数据目录和方案均可用。
+- 遇到原生库加载失败时，确认 librime 与 JVM 位数一致，并检查它依赖的动态库是否可被操作系统找到。
+- 方案依赖 Lua、Octagram 等插件时，先安装对应 librime 插件，再将模块名写入 `requiredModules`。
 
-```properties
-S:requiredModules=lua,octagram
-```
-
-InGameIME 会通过 librime 的模块 API 检查每个声明项。缺少模块、方案未部署、方案选择失败或 session 状态异常都会禁用本次进程内的输入法接入，不会回退到部分功能。
-
-插件和方案必须由用户从各自官方仓库安装，并遵守其许可证。常见来源包括：
-
-- [librime-lua](https://github.com/hchunhui/librime-lua)
-- [librime-octagram](https://github.com/lotem/librime-octagram)
-- [Rime 配置仓库索引](https://github.com/rime/home/wiki/RimeWithSchemata)
-
-## 旁路行为
-
-InGameIME 只有 `UNINITIALIZED`、`ACTIVE` 和 `DISABLED` 三种进程内状态。初始化完整成功后才进入 `ACTIVE`。
-
-在 JNA 缺失、主库缺失或架构不匹配、目录无效、librime 初始化或部署异常、必需模块缺失、方案不可用、session 创建失败等情况下，模组会记录一次禁用原因并保持 `DISABLED`：
-
-- 不拦截任何按键；
-- 不绘制候选窗；
-- 不向聊天框写入文本；
-- 不自行创建、下载或填充 Rime 数据目录。
-
-librime 在成功初始化后的正常工作中可能部署配置并更新用户词典。这些写入由用户提供的 librime 和数据目录控制，因此使用现有系统目录前应先备份。
+更多 Rime 配置说明见 [Rime 官方文档](https://rime.im/docs/) 和 [Rime 配置仓库索引](https://github.com/rime/home/wiki/RimeWithSchemata)。
 
 ## 构建
 
@@ -113,4 +170,8 @@ librime 在成功初始化后的正常工作中可能部署配置并更新用户
 .\gradlew.bat build
 ```
 
-JNA 使用 `compileOnly`，不会被打入输出 JAR，也不会作为发布依赖传递。构建产物位于 `build/libs`。
+构建产物位于 `build/libs`。
+
+## 许可证
+
+InGameIME 由 [liansishen](https://github.com/liansishen) 维护，使用 [MIT License](LICENSE) 发布。

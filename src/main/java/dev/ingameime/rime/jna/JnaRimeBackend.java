@@ -25,6 +25,7 @@ public final class JnaRimeBackend implements RimeBackend {
     private static final Object[] NO_ARGUMENTS = new Object[0];
     private static final int MAX_SCHEMA_COUNT = 4096;
     private static final int MAX_CANDIDATE_COUNT = 64;
+    private static final int GET_INPUT_FUNCTION_INDEX = 69;
 
     private NativeLibrary library;
     private TraitsHolder traits;
@@ -38,6 +39,8 @@ public final class JnaRimeBackend implements RimeBackend {
     private Function freeContext;
     private Function getStatus;
     private Function freeStatus;
+    private Function setOption;
+    private Function getInput;
     private Function getSchemaList;
     private Function freeSchemaList;
     private Function selectSchema;
@@ -48,6 +51,7 @@ public final class JnaRimeBackend implements RimeBackend {
     private RimeSnapshot snapshot = RimeSnapshot.EMPTY;
     private String activeSchemaId = "";
     private String activeSchemaName = "default schema";
+    private boolean activeAsciiMode;
 
     public JnaRimeBackend(RimeRuntimeConfig config) {
         library = NativeLibrary.getInstance(
@@ -71,6 +75,8 @@ public final class JnaRimeBackend implements RimeBackend {
             freeContext = function(api.freeContext);
             getStatus = function(api.getStatus);
             freeStatus = function(api.freeStatus);
+            setOption = function(api.setOption);
+            getInput = apiFunction(api, GET_INPUT_FUNCTION_INDEX, "get_input");
             getSchemaList = function(api.getSchemaList);
             freeSchemaList = function(api.freeSchemaList);
             selectSchema = function(api.selectSchema);
@@ -117,10 +123,11 @@ public final class JnaRimeBackend implements RimeBackend {
         String commitText = readCommit();
         snapshot = readContext();
         SessionStatus status = readStatus("");
+        activeAsciiMode = status.asciiMode;
         if (availableSchemaIds.contains(status.schemaId)) {
             updateStatus(status);
         }
-        return new RimeKeyResult(consumed, commitText, snapshot, activeSchemaId, activeSchemaName);
+        return new RimeKeyResult(consumed, commitText, snapshot, activeSchemaId, activeSchemaName, activeAsciiMode);
     }
 
     @Override
@@ -128,6 +135,36 @@ public final class JnaRimeBackend implements RimeBackend {
         clearComposition.invokeVoid(new Object[] { session });
         snapshot = readContext();
         return snapshot;
+    }
+
+    @Override
+    public RimeKeyResult changeAsciiMode(boolean asciiMode, boolean commitRawInput) {
+        String commitText = commitRawInput ? readRawInput() : "";
+        clearComposition.invokeVoid(new Object[] { session });
+        Memory option = utf8("ascii_mode");
+        setOption.invokeVoid(new Object[] { session, option, asciiMode ? 1 : 0 });
+        snapshot = readContext();
+        SessionStatus status = readStatus("");
+        activeAsciiMode = status.asciiMode;
+        if (availableSchemaIds.contains(status.schemaId)) {
+            updateStatus(status);
+        }
+        return new RimeKeyResult(true, commitText, snapshot, activeSchemaId, activeSchemaName, activeAsciiMode);
+    }
+
+    @Override
+    public RimeKeyResult reloadSchema() {
+        String schemaId = activeSchemaId;
+        boolean asciiMode = activeAsciiMode;
+        Memory requestedSchema = utf8(schemaId);
+        if (selectSchema.invokeInt(new Object[] { session, requestedSchema }) == 0) {
+            throw new IllegalStateException("librime rejected schema reload: " + schemaId);
+        }
+        Memory option = utf8("ascii_mode");
+        setOption.invokeVoid(new Object[] { session, option, asciiMode ? 1 : 0 });
+        snapshot = readContext();
+        updateStatus(readStatus(schemaId));
+        return new RimeKeyResult(true, "", snapshot, activeSchemaId, activeSchemaName, activeAsciiMode);
     }
 
     @Override
@@ -145,6 +182,11 @@ public final class JnaRimeBackend implements RimeBackend {
     @Override
     public String getSchemaName() {
         return activeSchemaName;
+    }
+
+    @Override
+    public boolean isAsciiMode() {
+        return activeAsciiMode;
     }
 
     @Override
@@ -244,7 +286,7 @@ public final class JnaRimeBackend implements RimeBackend {
             if (!requestedSchema.isEmpty() && !requestedSchema.equals(schemaId)) {
                 throw new IllegalStateException("librime selected " + schemaId + " instead of " + requestedSchema);
             }
-            return new SessionStatus(schemaId, schemaName.isEmpty() ? schemaId : schemaName);
+            return new SessionStatus(schemaId, schemaName.isEmpty() ? schemaId : schemaName, status.isAsciiMode != 0);
         } finally {
             freeStatus.invokeInt(new Object[] { status.getPointer() });
         }
@@ -253,6 +295,7 @@ public final class JnaRimeBackend implements RimeBackend {
     private void updateStatus(SessionStatus status) {
         activeSchemaId = status.schemaId;
         activeSchemaName = status.schemaName;
+        activeAsciiMode = status.asciiMode;
     }
 
     private String readCommit() {
@@ -338,6 +381,20 @@ public final class JnaRimeBackend implements RimeBackend {
         return api;
     }
 
+    private static Function apiFunction(RimeApi api, int functionIndex, String name) {
+        int firstFunctionOffset = Native.POINTER_SIZE == 8 ? 8 : 4;
+        int offset = firstFunctionOffset + functionIndex * Native.POINTER_SIZE;
+        if (Integer.BYTES + api.dataSize <= offset) {
+            throw new IllegalStateException("the installed librime API does not provide " + name);
+        }
+        Pointer pointer = api.getPointer()
+            .getPointer(offset);
+        if (pointer == null) {
+            throw new IllegalStateException("the installed librime API does not provide " + name);
+        }
+        return function(pointer);
+    }
+
     private static Function function(Pointer pointer) {
         return Function.getFunction(pointer);
     }
@@ -354,14 +411,20 @@ public final class JnaRimeBackend implements RimeBackend {
         return pointer == null ? "" : pointer.getString(0, StandardCharsets.UTF_8.name());
     }
 
+    private String readRawInput() {
+        return string(getInput.invokePointer(new Object[] { session }));
+    }
+
     private static final class SessionStatus {
 
         private final String schemaId;
         private final String schemaName;
+        private final boolean asciiMode;
 
-        SessionStatus(String schemaId, String schemaName) {
+        SessionStatus(String schemaId, String schemaName, boolean asciiMode) {
             this.schemaId = schemaId;
             this.schemaName = schemaName;
+            this.asciiMode = asciiMode;
         }
     }
 
@@ -468,6 +531,7 @@ public final class JnaRimeBackend implements RimeBackend {
                 freeContext,
                 getStatus,
                 freeStatus,
+                setOption,
                 getSchemaList,
                 freeSchemaList,
                 selectSchema);

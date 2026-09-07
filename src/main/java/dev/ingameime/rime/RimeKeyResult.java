@@ -7,14 +7,16 @@ public final class RimeKeyResult {
     private final RimeSnapshot snapshot;
     private final String schemaId;
     private final String schemaName;
+    private final boolean asciiMode;
 
-    public RimeKeyResult(boolean consumed, String commitText, RimeSnapshot snapshot, String schemaId,
-        String schemaName) {
+    public RimeKeyResult(boolean consumed, String commitText, RimeSnapshot snapshot, String schemaId, String schemaName,
+        boolean asciiMode) {
         this.consumed = consumed;
         this.commitText = commitText;
         this.snapshot = snapshot;
         this.schemaId = schemaId;
         this.schemaName = schemaName;
+        this.asciiMode = asciiMode;
     }
 
     public boolean isConsumed() {
@@ -35,5 +37,9 @@ public final class RimeKeyResult {
 
     public String getSchemaName() {
         return schemaName;
+    }
+
+    public boolean isAsciiMode() {
+        return asciiMode;
     }
 }
