@@ -411,6 +411,11 @@ public final class JnaRimeBackend implements RimeBackend {
         return pointer == null ? "" : pointer.getString(0, StandardCharsets.UTF_8.name());
     }
 
+    @Override
+    public String getRawInput() {
+        return readRawInput();
+    }
+
     private String readRawInput() {
         return string(getInput.invokePointer(new Object[] { session }));
     }

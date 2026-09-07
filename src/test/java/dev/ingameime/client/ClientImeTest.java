@@ -17,6 +17,7 @@ import java.util.Queue;
 import org.junit.Before;
 import org.junit.Test;
 
+import dev.ingameime.client.dictionary.ItemNameIndex;
 import dev.ingameime.rime.RimeBackend;
 import dev.ingameime.rime.RimeKeyResult;
 import dev.ingameime.rime.RimeSnapshot;
@@ -93,6 +94,77 @@ public class ClientImeTest {
         assertEquals("草", target.insertedText);
     }
 
+    @Test
+    public void directSearchConsumesDigitsAndSpaceWithoutCallingRime() throws Exception {
+        ItemNameIndex index = ItemNameIndex.build(Arrays.asList("16A 动力仓", "4A 动力仓"));
+        ime = new ClientIme(() -> index);
+        setField("backend", backend);
+        setField("activeSchemaId", "double_pinyin_flypy");
+        setState("ACTIVE");
+        RecordingTarget target = new RecordingTarget();
+        for (char character : ":dslich+16a".toCharArray()) {
+            assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(character, 0)));
+        }
+        assertTrue(
+            ime.getSnapshot()
+                .isComposing());
+        assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(' ', 0)));
+        assertEquals("16A 动力仓", target.insertedText);
+        assertTrue(backend.processedKeys.isEmpty());
+        assertFalse(
+            ime.getSnapshot()
+                .isVisible());
+    }
+
+    @Test
+    public void searchCancelsOnGuiChangeAndEnglishColonStaysWithRime() throws Exception {
+        ime = new ClientIme(() -> ItemNameIndex.EMPTY);
+        setField("backend", backend);
+        setField("activeSchemaId", "double_pinyin_flypy");
+        setState("ACTIVE");
+        RecordingTarget target = new RecordingTarget();
+        assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(':', 0)));
+        ime.onGuiOpened(new Object());
+        assertFalse(
+            ime.getSnapshot()
+                .isVisible());
+        setField("asciiMode", true);
+        backend.processResults.add(new RimeKeyResult(false, "", RimeSnapshot.EMPTY, "double_pinyin_flypy", "", true));
+        assertFalse(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(':', 0)));
+        assertEquals(Arrays.asList((int) ':'), backend.processedKeys);
+    }
+
+    @Test
+    public void chineseVIsPassedToRime() throws Exception {
+        setField("activeSchemaId", "double_pinyin_flypy");
+        setState("ACTIVE");
+        backend.processResults.add(new RimeKeyResult(true, "", RimeSnapshot.EMPTY, "double_pinyin_flypy", "", false));
+        assertTrue(ime.handleKeyboardInput(new RecordingTarget(), new KeyMapper.KeyStroke('v', 0)));
+        assertEquals(Arrays.asList((int) 'v'), backend.processedKeys);
+    }
+
+    @Test
+    public void bracketsAndArrowsSelectWithoutChangingTheQuery() throws Exception {
+        ItemNameIndex index = ItemNameIndex.build(Arrays.asList("16A 动力仓", "4A 动力仓"));
+        ime = new ClientIme(() -> index);
+        setField("backend", backend);
+        setField("activeSchemaId", "double_pinyin_flypy");
+        setState("ACTIVE");
+        RecordingTarget target = new RecordingTarget();
+        for (char character : ":dslich+".toCharArray()) {
+            assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(character, 0)));
+        }
+        for (int symbol : new int[] { ']', '[', 0xff54, 0xff52, ']' }) {
+            assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(symbol, 0)));
+            RimeSnapshot view = ime.getSnapshot();
+            assertEquals(":dslich+", view.getPreedit());
+            assertEquals(symbol == '[' || symbol == 0xff52 ? 0 : 1, view.getHighlightedCandidate());
+        }
+        assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(' ', 0)));
+        assertEquals("4A 动力仓", target.insertedText);
+        assertTrue(backend.processedKeys.isEmpty());
+    }
+
     private void setField(String name, Object value) throws Exception {
         Field field = ClientIme.class.getDeclaredField(name);
         field.setAccessible(true);
@@ -149,7 +221,7 @@ public class ClientImeTest {
 
         @Override
         public RimeSnapshot clearComposition() {
-            throw new UnsupportedOperationException();
+            return RimeSnapshot.EMPTY;
         }
 
         @Override

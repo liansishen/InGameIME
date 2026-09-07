@@ -4,6 +4,10 @@ public interface RimeBackend {
 
     RimeKeyResult processKey(int keycode, int modifiers);
 
+    default String getRawInput() {
+        return "";
+    }
+
     RimeSnapshot clearComposition();
 
     RimeKeyResult changeAsciiMode(boolean asciiMode, boolean commitRawInput);

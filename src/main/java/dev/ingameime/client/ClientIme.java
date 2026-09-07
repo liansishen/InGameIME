@@ -2,9 +2,14 @@ package dev.ingameime.client;
 
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Supplier;
 
 import dev.ingameime.Config;
 import dev.ingameime.InGameIME;
+import dev.ingameime.client.dictionary.GameDictionaryController;
+import dev.ingameime.client.dictionary.ItemNameIndex;
 import dev.ingameime.rime.RimeBackend;
 import dev.ingameime.rime.RimeKeyResult;
 import dev.ingameime.rime.RimePatchInstaller;
@@ -29,8 +34,23 @@ public final class ClientIme {
     private Object activeScreen;
     private InputTarget activeTarget;
     private boolean inputModeInitialized;
+    private final ItemSearchSession itemSearch = new ItemSearchSession();
+    private List<String> itemMatches = new ArrayList<>();
+    private int itemSelection = -1;
+    private String lastItemQuery = "";
+    private ItemNameIndex lastIndex = ItemNameIndex.EMPTY;
 
-    private ClientIme() {}
+    private final Supplier<ItemNameIndex> itemIndex;
+
+    private ClientIme() {
+        this(
+            () -> GameDictionaryController.getInstance()
+                .getIndex());
+    }
+
+    ClientIme(Supplier<ItemNameIndex> itemIndex) {
+        this.itemIndex = itemIndex;
+    }
 
     public static ClientIme getInstance() {
         return INSTANCE;
@@ -77,7 +97,7 @@ public final class ClientIme {
         if (state != State.ACTIVE) {
             return false;
         }
-        return handleKeyboardInput(target, KeyMapper.current(snapshot.isComposing()));
+        return handleKeyboardInput(target, KeyMapper.current(itemSearch.isActive() || snapshot.isComposing()));
     }
 
     synchronized boolean handleKeyboardInput(InputTarget target, KeyMapper.KeyStroke key) {
@@ -86,6 +106,15 @@ public final class ClientIme {
         }
 
         try {
+            if (!asciiMode && supportedSearch()
+                && (itemSearch.isActive() || snapshot.isComposing())
+                && (key.modifiers & (KeyMapper.CONTROL_MASK | KeyMapper.ALT_MASK)) == 0
+                && (key.keysym == '[' || key.keysym == ']')) {
+                key = new KeyMapper.KeyStroke(key.keysym == '[' ? 0xff52 : 0xff54, key.modifiers);
+            }
+            if (handleItemSearch(target, key)) {
+                return true;
+            }
             RimeKeyResult result = backend.processKey(key.keysym, key.modifiers);
             applyResult(target, result, false);
             return result.isConsumed();
@@ -153,6 +182,9 @@ public final class ClientIme {
             return;
         }
         try {
+            if (itemSearch.isActive()) {
+                clearComposition();
+            }
             applyResult(target, backend.changeAsciiMode(!asciiMode, true), true);
             InGameIME.LOG.info("InGameIME input mode switched to {}", asciiMode ? "English" : "Chinese");
         } catch (Throwable failure) {
@@ -161,6 +193,7 @@ public final class ClientIme {
     }
 
     public synchronized void clearComposition() {
+        resetItemSearch();
         schemaNoticeUntil = 0;
         modeNoticeUntil = 0;
         if (state != State.ACTIVE || !snapshot.isVisible()) {
@@ -188,8 +221,122 @@ public final class ClientIme {
         }
     }
 
+    private void resetItemSearch() {
+        itemSearch.reset();
+        itemMatches = new ArrayList<>();
+        itemSelection = -1;
+        lastItemQuery = "";
+    }
+
+    private boolean flypy() {
+        return "double_pinyin_flypy".equals(activeSchemaId);
+    }
+
+    private boolean supportedSearch() {
+        return flypy() || "rime_ice".equals(activeSchemaId);
+    }
+
+    private void updateItemMatches() {
+        if (asciiMode || !supportedSearch() || !snapshot.isComposing()) {
+            resetItemSearch();
+            return;
+        }
+        ItemNameIndex index = itemIndex.get();
+        String raw = backend.getRawInput();
+        if (!raw.equals(lastItemQuery) || index != lastIndex) {
+            itemMatches = index.search(raw, flypy());
+            for (RimeSnapshot.Candidate candidate : snapshot.getCandidates()) {
+                itemMatches.remove(candidate.getText());
+            }
+            itemSelection = -1;
+            lastItemQuery = raw;
+            lastIndex = index;
+        }
+    }
+
+    private boolean handleItemSearch(InputTarget target, KeyMapper.KeyStroke key) throws Exception {
+        if (asciiMode || !supportedSearch()) {
+            return false;
+        }
+        int symbol = key.keysym;
+        boolean shortcut = (key.modifiers & (KeyMapper.CONTROL_MASK | KeyMapper.ALT_MASK)) != 0;
+        if (itemSearch.isActive()) {
+            if (symbol == 0xff1b) {
+                clearComposition();
+            } else if (!shortcut && (symbol == ' ' || symbol == 0xff0d)) {
+                String selected = itemSearch.selection();
+                if (selected != null) {
+                    target.insertText(selected);
+                    clearComposition();
+                }
+            } else if (!shortcut) {
+                itemSearch.edit(symbol, itemIndex.get(), flypy());
+                if (itemSearch.shouldResumeRime()) {
+                    String raw = itemSearch.query();
+                    itemSearch.reset();
+                    for (int i = 0; i < raw.length(); i++) {
+                        applyResult(target, backend.processKey(raw.charAt(i), 0), false);
+                    }
+                    if (raw.isEmpty()) {
+                        clearComposition();
+                    }
+                }
+            }
+            return true;
+        }
+        if (shortcut) {
+            return false;
+        }
+        String raw = backend.getRawInput();
+        if ((symbol == ':' && raw.isEmpty()) || (symbol == '+' && !raw.isEmpty())) {
+            boolean direct = symbol == ':';
+            backend.clearComposition();
+            itemSearch.begin(direct ? "" : raw + "+", direct, itemIndex.get(), flypy());
+            snapshot = RimeSnapshot.EMPTY;
+            return true;
+        }
+        if (!itemMatches.isEmpty()) {
+            if (symbol == 0xff54
+                && (itemSelection >= 0 || snapshot.getHighlightedCandidate() >= snapshot.getCandidates()
+                    .size() - 1)) {
+                itemSelection = Math.min(itemMatches.size() - 1, itemSelection + 1);
+                return true;
+            }
+            if (symbol == 0xff52 && itemSelection >= 0) {
+                itemSelection--;
+                return true;
+            }
+            if (symbol == ' ' && itemSelection >= 0) {
+                target.insertText(itemMatches.get(itemSelection));
+                clearComposition();
+                return true;
+            }
+        }
+        itemSelection = -1;
+        return false;
+    }
+
     public synchronized RimeSnapshot getSnapshot() {
-        return snapshot;
+        if (itemSearch.isActive()) {
+            return itemSearch.snapshot();
+        }
+        updateItemMatches();
+        if (itemMatches.isEmpty()) {
+            return snapshot;
+        }
+        List<RimeSnapshot.Candidate> candidates = new ArrayList<>(snapshot.getCandidates());
+        int nativeCount = candidates.size();
+        int start = itemSelection < 0 ? 0 : itemSelection / 5 * 5;
+        for (int i = start; i < Math.min(start + 5, itemMatches.size()); i++) {
+            String text = itemMatches.get(i);
+            candidates.add(new RimeSnapshot.Candidate("", text, ""));
+        }
+        return new RimeSnapshot(
+            snapshot.getPreedit(),
+            snapshot.getCursorPosition(),
+            snapshot.isComposing(),
+            candidates,
+            itemSelection < 0 ? snapshot.getHighlightedCandidate() : nativeCount + itemSelection - start);
     }
 
     public synchronized boolean isActive() {
@@ -227,6 +374,12 @@ public final class ClientIme {
     }
 
     public synchronized String getModeNotice() {
+        if (itemSearch.isActive()) {
+            String key = itemIndex.get()
+                .size() == 0 ? "ingameime.search.build_first"
+                    : itemSearch.selection() == null ? "ingameime.search.no_matches" : "ingameime.search.active";
+            return net.minecraft.util.StatCollector.translateToLocal(key);
+        }
         return Config.showModeIndicator && state == State.ACTIVE && System.currentTimeMillis() < modeNoticeUntil
             ? asciiMode ? "EN" : "中"
             : "";
@@ -244,6 +397,7 @@ public final class ClientIme {
             .isEmpty()) {
             target.insertText(result.getCommitText());
         }
+        updateItemMatches();
     }
 
     private void showModeNotice() {
@@ -252,6 +406,7 @@ public final class ClientIme {
 
     private synchronized void shutdown() {
         RimeBackend current = backend;
+        resetItemSearch();
         backend = null;
         snapshot = RimeSnapshot.EMPTY;
         activeSchemaId = "";
@@ -274,6 +429,7 @@ public final class ClientIme {
 
     private void disable(String reason, Throwable failure) {
         RimeBackend current = backend;
+        resetItemSearch();
         backend = null;
         snapshot = RimeSnapshot.EMPTY;
         activeSchemaId = "";

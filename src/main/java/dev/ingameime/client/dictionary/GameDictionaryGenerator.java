@@ -31,6 +31,36 @@ final class GameDictionaryGenerator {
 
     private GameDictionaryGenerator() {}
 
+    static Result generateIndex(List<String> rawNames, File target, BooleanSupplier cancelled, IntConsumer progress,
+        Runnable beforeWrite) throws IOException {
+        Set<String> names = new java.util.TreeSet<>();
+        int empty = 0;
+        int keys = 0;
+        int duplicates = 0;
+        for (int i = 0; i < rawNames.size(); i++) {
+            if (cancelled.getAsBoolean()) {
+                return new Result(true, i, names.size(), empty, keys, duplicates, 0);
+            }
+            String name = clean(rawNames.get(i));
+            if (name.isEmpty()) {
+                empty++;
+            } else if (TRANSLATION_KEY.matcher(name)
+                .matches()) {
+                    keys++;
+                } else if (!names.add(name)) {
+                    duplicates++;
+                }
+            progress.accept(i + 1);
+        }
+        ItemNameIndex index = ItemNameIndex.build(new java.util.ArrayList<>(names));
+        if (cancelled.getAsBoolean()) {
+            return new Result(true, rawNames.size(), names.size(), empty, keys, duplicates, 0);
+        }
+        beforeWrite.run();
+        index.save(target.toPath());
+        return new Result(false, rawNames.size(), names.size(), empty, keys, duplicates, 0);
+    }
+
     static Result generate(List<String> rawNames, File target, File flypyTarget, String fingerprint,
         BooleanSupplier cancelled, IntConsumer progress, Runnable beforeWrite) throws IOException {
         Map<String, String> entries = new TreeMap<>();

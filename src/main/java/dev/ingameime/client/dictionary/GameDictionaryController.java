@@ -34,7 +34,8 @@ public final class GameDictionaryController {
 
     private static final GameDictionaryController INSTANCE = new GameDictionaryController();
     private static final int ITEMS_PER_TICK = 24;
-    private static final String GENERATOR_VERSION = "3";
+    private static final String GENERATOR_VERSION = "4";
+    private volatile ItemNameIndex index = ItemNameIndex.EMPTY;
 
     private volatile GameDictionarySnapshot snapshot;
     private volatile boolean cancelRequested;
@@ -50,6 +51,11 @@ public final class GameDictionaryController {
     private GameDictionaryController() {
         stateFile = new File(Minecraft.getMinecraft().mcDataDir, "config/ingameime-dictionary.properties");
         snapshot = loadState();
+        try {
+            index = ItemNameIndex.load(indexFile().toPath());
+        } catch (IOException | RuntimeException failure) {
+            InGameIME.LOG.warn("Could not load item name index", failure);
+        }
     }
 
     public static GameDictionaryController getInstance() {
@@ -60,20 +66,21 @@ public final class GameDictionaryController {
         return snapshot;
     }
 
+    public ItemNameIndex getIndex() {
+        return index;
+    }
+
+    private File indexFile() {
+        return new File(stateFile.getParentFile(), "ingameime-item-index-v1.json");
+    }
+
     public synchronized void startGeneration() {
         if (snapshot.isRunning()) {
             return;
         }
         try {
-            RimeRuntimeConfig runtime = RimeRuntimeConfig.resolve();
-            File rimeIceSchema = new File(runtime.getUserDataDirectory(), "rime_ice.schema.yaml");
-            File flypySchema = new File(runtime.getUserDataDirectory(), "double_pinyin_flypy.schema.yaml");
-            if (!rimeIceSchema.isFile() && !flypySchema.isFile()) {
-                throw new IllegalStateException(
-                    "no supported Rime Ice schema was found in the configured user directory");
-            }
-            target = new File(runtime.getUserDataDirectory(), "ingameime_game_phrase.txt");
-            flypyTarget = new File(runtime.getUserDataDirectory(), "ingameime_game_phrase_flypy.txt");
+            target = indexFile();
+            flypyTarget = null;
             fingerprint = fingerprint();
             items = new ArrayList<>();
             for (Item item : GameData.getItemRegistry()
@@ -231,11 +238,9 @@ public final class GameDictionaryController {
     private void runGenerator(List<String> names, int scannedItems, int scanFailures, File output, File flypyOutput,
         String runFingerprint) {
         try {
-            GameDictionaryGenerator.Result result = GameDictionaryGenerator.generate(
+            GameDictionaryGenerator.Result result = GameDictionaryGenerator.generateIndex(
                 names,
                 output,
-                flypyOutput,
-                runFingerprint,
                 () -> cancelRequested,
                 processed -> updateConverting(
                     processed,
@@ -256,9 +261,13 @@ public final class GameDictionaryController {
                     result.duplicateNames,
                     result.nonChineseNames);
             } else {
-                GameDictionaryGenerator.removeGeneratedBlock(new File(output.getParentFile(), "custom_phrase.txt"));
-                GameDictionaryGenerator
-                    .removeGeneratedBlock(new File(output.getParentFile(), "custom_phrase_double.txt"));
+                File userDirectory = RimeRuntimeConfig.resolve()
+                    .getUserDataDirectory();
+                for (String legacy : new String[] { "custom_phrase.txt", "custom_phrase_double.txt",
+                    "ingameime_game_phrase.txt", "ingameime_game_phrase_flypy.txt" }) {
+                    GameDictionaryGenerator.removeGeneratedBlock(new File(userDirectory, legacy));
+                }
+                index = ItemNameIndex.load(output.toPath());
                 scheduleCompletion(names.size(), scannedItems, scanFailures, result, output, runFingerprint);
             }
         } catch (IOException | RuntimeException failure) {

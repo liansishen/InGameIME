@@ -460,9 +460,7 @@ public final class InGameImeConfigScreen extends GuiScreen {
         drawString(fontRendererObj, tr("ingameime.gui.dictionary.target"), 22, 62, 0xdde2e8);
         drawString(
             fontRendererObj,
-            fontRendererObj.trimStringToWidth(
-                "ingameime_game_phrase.txt + ingameime_game_phrase_flypy.txt",
-                Math.max(1, width - 44)),
+            fontRendererObj.trimStringToWidth("config/ingameime-item-index-v1.json", Math.max(1, width - 44)),
             22,
             76,
             0xffffff);

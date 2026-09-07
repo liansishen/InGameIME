@@ -1,5 +1,6 @@
 package dev.ingameime.client;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import net.minecraft.client.Minecraft;
@@ -23,6 +24,10 @@ public final class ClientEvents {
     @SubscribeEvent
     public void onDrawScreen(GuiScreenEvent.DrawScreenEvent.Post event) {
         ClientIme ime = ClientIme.getInstance();
+        if (!org.lwjgl.opengl.Display.isActive()) {
+            ime.clearComposition();
+            return;
+        }
         InputTarget target = InputTargets.find(event.gui);
         ime.updateInputTarget(event.gui, target);
         if (!ime.isActive() || target == null) {
@@ -41,13 +46,31 @@ public final class ClientEvents {
         modeNotice = font.trimStringToWidth(modeNotice, maxWidth);
         schemaNotice = font.trimStringToWidth(schemaNotice.isEmpty() ? "" : "[" + schemaNotice + "]", maxWidth);
         String preedit = font.trimStringToWidth(snapshot.getPreedit(), maxWidth);
-        String candidates = font.trimStringToWidth(candidateLine(snapshot), maxWidth);
+        List<String> candidateRows = new ArrayList<>();
+        List<RimeSnapshot.Candidate> visibleCandidates = snapshot.getCandidates();
+        for (int i = 0; i < visibleCandidates.size(); i++) {
+            RimeSnapshot.Candidate candidate = visibleCandidates.get(i);
+            String label = candidate.getLabel()
+                .isEmpty() ? "" : candidate.getLabel() + ".";
+            String row = label + candidate.getText();
+            if (Config.showCandidateComments && !candidate.getComment()
+                .isEmpty()) {
+                row += " " + candidate.getComment();
+            }
+            if (i == snapshot.getHighlightedCandidate()) {
+                row = "\u00a7e" + row;
+            }
+            candidateRows.add(font.trimStringToWidth(row, maxWidth));
+        }
         int lines = (modeNotice.isEmpty() ? 0 : 1) + (schemaNotice.isEmpty() ? 0 : 1)
             + (preedit.isEmpty() ? 0 : 1)
-            + (candidates.isEmpty() ? 0 : 1);
+            + candidateRows.size();
         int boxWidth = Math.max(
             Math.max(font.getStringWidth(modeNotice), font.getStringWidth(schemaNotice)),
-            Math.max(font.getStringWidth(preedit), font.getStringWidth(candidates)));
+            font.getStringWidth(preedit));
+        for (String row : candidateRows) {
+            boxWidth = Math.max(boxWidth, font.getStringWidth(row));
+        }
         InputBounds panel = placePanel(
             target.bounds(),
             event.gui.width,
@@ -70,8 +93,9 @@ public final class ClientEvents {
             font.drawStringWithShadow(preedit, x, y, 0xffffff);
             y += font.FONT_HEIGHT;
         }
-        if (!candidates.isEmpty()) {
-            font.drawStringWithShadow(candidates, x, y, 0xffffff);
+        for (String row : candidateRows) {
+            font.drawStringWithShadow(row, x, y, 0xffffff);
+            y += font.FONT_HEIGHT;
         }
     }
 
