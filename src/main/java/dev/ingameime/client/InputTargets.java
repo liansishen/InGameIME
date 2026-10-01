@@ -12,6 +12,7 @@ final class InputTargets {
     private static final boolean MODULAR_UI_2_LOADED = Loader.isModLoaded("modularui2");
     private static final boolean BIBLIOCRAFT_LOADED = Loader.isModLoaded("BiblioCraft");
     private static final boolean CLIPBOARD_ANYWHERE_LOADED = Loader.isModLoaded("clipboardanywhere");
+    private static final boolean BACKPACK_ENHANCE_LOADED = Loader.isModLoaded("backpackenhance");
 
     private InputTargets() {}
 
@@ -21,6 +22,9 @@ final class InputTargets {
         }
 
         InputTarget target;
+        if (BACKPACK_ENHANCE_LOADED && (target = BackpackEnhanceInputTarget.find(screen)) != null) {
+            return target;
+        }
         if (CLIPBOARD_ANYWHERE_LOADED && (target = ClipboardAnywhereInputTarget.find(screen)) != null) {
             return target;
         }

@@ -7,7 +7,7 @@ InGameIME 是 Minecraft 1.7.10 Forge 的客户端 Rime 输入法前端，可在�
 - 支持 Rime 方案、候选选择、翻页和方案切换。
 - 支持中英文模式切换，可配置打开输入框时使用的模式。
 - 可显示当前输入模式、方案切换提示和候选注释。
-- 已接入原版输入框，以及 NotEnoughItems、Applied Energistics 2、ModularUI、ModularUI 2、BiblioCraft 和 ClipboardAnywhere 的输入框。
+- 已接入原版输入框，以及 NotEnoughItems、Applied Energistics 2、ModularUI、ModularUI 2、BiblioCraft、ClipboardAnywhere 和 BackpackEnhance 的输入框。
 - 可手动建立完整物品名称索引，支持全拼、小鹤双拼片段及英文、数字筛选。
 - 仅需安装在客户端；输入法不可用时保留原版输入行为。
 
@@ -144,6 +144,8 @@ general {
 ## 使用
 
 打开受支持的输入框后即可按当前 Rime 方案输入。预编辑文本和候选项会显示在输入框附近，选词、翻页和提交按键由所用 Rime 方案决定。
+
+BackpackEnhance 需要使用带背包面板搜索框的版本。聚焦面板搜索框后，InGameIME 会优先向该搜索框提交文字，并同步更新物品过滤结果。收起面板、移开输入焦点或关闭界面会取消当前组合串；移动面板后候选窗跟随搜索框位置。
 
 默认短按任一 Shift 可切换中文和英文模式；长按 Shift 或与其他按键组合时保留原有按键行为。快捷键可在配置界面的“输入”页修改。
 

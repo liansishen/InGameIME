@@ -165,6 +165,91 @@ public class ClientImeTest {
         assertTrue(backend.processedKeys.isEmpty());
     }
 
+    @Test
+    public void keepsCompositionForSameTargetAndClearsItOnFocusLoss() throws Exception {
+        Object screen = new Object();
+        RecordingTarget target = new RecordingTarget();
+        ime.updateInputTarget(screen, target);
+        setState("ACTIVE");
+        RimeSnapshot composing = new RimeSnapshot("cao", 3, false, Collections.emptyList(), -1);
+        setField("snapshot", composing);
+
+        ime.updateInputTarget(screen, target);
+        assertSame(composing, ime.getSnapshot());
+        assertEquals(0, backend.clearCount);
+        ime.updateInputTarget(screen, null);
+        assertEquals(1, backend.clearCount);
+        assertFalse(
+            ime.getSnapshot()
+                .isVisible());
+        assertEquals("", target.insertedText);
+    }
+
+    @Test
+    public void clearsCompositionWhenSwitchingTargetsOrClosingGui() throws Exception {
+        Object screen = new Object();
+        RecordingTarget first = new RecordingTarget();
+        ime.updateInputTarget(screen, first);
+        setState("ACTIVE");
+        setField("snapshot", new RimeSnapshot("cao", 3, false, Collections.emptyList(), -1));
+        ime.updateInputTarget(screen, new RecordingTarget());
+        assertEquals(1, backend.clearCount);
+        assertFalse(
+            ime.getSnapshot()
+                .isVisible());
+        setField("snapshot", new RimeSnapshot("cao", 3, false, Collections.emptyList(), -1));
+        ime.onGuiOpened(null);
+        assertEquals(2, backend.clearCount);
+        assertFalse(
+            ime.getSnapshot()
+                .isVisible());
+        assertEquals("", first.insertedText);
+    }
+
+    @Test
+    public void forwardsRimeEnterAndEscapeAndInsertsOnlyCommittedText() throws Exception {
+        RecordingTarget target = new RecordingTarget();
+        setState("ACTIVE");
+        backend.processResults.add(new RimeKeyResult(true, "草", RimeSnapshot.EMPTY, "", "", false));
+        backend.processResults.add(new RimeKeyResult(true, "", RimeSnapshot.EMPTY, "", "", false));
+        assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(0xff0d, 0)));
+        assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(0xff1b, 0)));
+        assertEquals(Arrays.asList(0xff0d, 0xff1b), backend.processedKeys);
+        assertEquals("草", target.insertedText);
+    }
+
+    @Test
+    public void itemSearchEnterCommitsAndEscapeOrFocusLossCancels() throws Exception {
+        ime = new ClientIme(() -> ItemNameIndex.build(Arrays.asList("动力仓")));
+        setField("backend", backend);
+        setField("activeSchemaId", "double_pinyin_flypy");
+        setState("ACTIVE");
+        Object screen = new Object();
+        RecordingTarget target = new RecordingTarget();
+        ime.updateInputTarget(screen, target);
+        for (char character : ":dslich".toCharArray()) {
+            assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(character, 0)));
+        }
+        assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(0xff0d, 0)));
+        assertEquals("动力仓", target.insertedText);
+        assertFalse(
+            ime.getSnapshot()
+                .isVisible());
+
+        assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(':', 0)));
+        assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(0xff1b, 0)));
+        assertFalse(
+            ime.getSnapshot()
+                .isVisible());
+        assertTrue(ime.handleKeyboardInput(target, new KeyMapper.KeyStroke(':', 0)));
+        ime.updateInputTarget(screen, null);
+        assertFalse(
+            ime.getSnapshot()
+                .isVisible());
+        assertEquals("动力仓", target.insertedText);
+        assertTrue(backend.processedKeys.isEmpty());
+    }
+
     private void setField(String name, Object value) throws Exception {
         Field field = ClientIme.class.getDeclaredField(name);
         field.setAccessible(true);
@@ -209,6 +294,7 @@ public class ClientImeTest {
         private RimeKeyResult reloadResult;
         private RuntimeException reloadFailure;
         private int reloadCount;
+        private int clearCount;
         private boolean closed;
         private final Queue<RimeKeyResult> processResults = new ArrayDeque<>();
         private final List<Integer> processedKeys = new ArrayList<>();
@@ -221,6 +307,7 @@ public class ClientImeTest {
 
         @Override
         public RimeSnapshot clearComposition() {
+            clearCount++;
             return RimeSnapshot.EMPTY;
         }
 
