@@ -26,7 +26,7 @@ public class VanillaInputTargetTest {
     }
 
     @Test
-    public void commitsThroughTheFocusedScreensNativeKeyHandler() throws Exception {
+    public void commitsThroughTheFocusedScreensNativeKeyHandlerInOneBatch() throws Exception {
         TestScreen screen = new TestScreen();
         screen.textField.setText("ab");
         screen.textField.setCursorPosition(1);
@@ -43,7 +43,30 @@ public class VanillaInputTargetTest {
         target.insertText("中文");
 
         assertEquals("a中文b", screen.textField.getText());
-        assertEquals(2, screen.changeCount);
+        assertEquals(1, screen.changeCount);
+    }
+
+    @Test
+    public void normalizesReverseSelectionAndFallsBackForUnbufferedFields() throws Exception {
+        TestScreen bufferedScreen = new TestScreen();
+        bufferedScreen.textField.setMaxStringLength(5);
+        bufferedScreen.textField.setText("abcd");
+        bufferedScreen.textField.setCursorPosition(3);
+        bufferedScreen.textField.setSelectionPos(1);
+
+        VanillaInputTarget.find(bufferedScreen)
+            .insertText("一二三四");
+        assertEquals("a一二三d", bufferedScreen.textField.getText());
+        assertEquals(4, bufferedScreen.textField.getCursorPosition());
+        assertEquals(1, bufferedScreen.changeCount);
+
+        UnbufferedScreen unbufferedScreen = new UnbufferedScreen();
+        TextFieldHandler.textBuffer.append("keep");
+        VanillaInputTarget.find(unbufferedScreen)
+            .insertText("动力仓");
+        assertEquals("动力仓", unbufferedScreen.textField.getText());
+        assertEquals(3, unbufferedScreen.changeCount);
+        assertEquals("keep", TextFieldHandler.textBuffer.toString());
     }
 
     @Test
@@ -87,7 +110,7 @@ public class VanillaInputTargetTest {
         assertNotNull(VanillaInputTarget.find(screen));
 
         ObfuscationReflectionHelper
-            .setPrivateValue(GuiScreenBook.class, screen, true, "bookIsSigning", "field_146480_s");
+            .setPrivateValue(GuiScreenBook.class, screen, true, "field_146480_s", "bookIsSigning");
         InputTarget title = VanillaInputTarget.find(screen);
         assertNotNull(title);
         assertEquals(2, title.kind());
@@ -99,6 +122,23 @@ public class VanillaInputTargetTest {
         private int changeCount;
 
         private TestScreen() {
+            textField.setFocused(true);
+        }
+
+        @Override
+        protected void keyTyped(char character, int keyCode) {
+            if (textField.textboxKeyTyped(character, keyCode)) {
+                changeCount++;
+            }
+        }
+    }
+
+    private static final class UnbufferedScreen extends GuiScreen {
+
+        private final GuiTextField textField = new GuiTextField(null, 0, 0, 100, 20);
+        private int changeCount;
+
+        private UnbufferedScreen() {
             textField.setFocused(true);
         }
 

@@ -4,16 +4,16 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.GuiScreenBook;
 import net.minecraft.client.gui.GuiTextField;
 import net.minecraft.client.gui.inventory.GuiEditSign;
 
-import cpw.mods.fml.common.ObfuscationReflectionHelper;
+import cpw.mods.fml.relauncher.ReflectionHelper;
 
 final class VanillaInputTarget implements InputTarget {
 
@@ -23,9 +23,13 @@ final class VanillaInputTarget implements InputTarget {
     private static final int SIGN = 3;
     private static final int BATTLESIGN = 4;
     private static final String TINKERS_BATTLESIGN = "tconstruct.tools.gui.BattlesignGui";
-    private static final String[] KEY_TYPED_NAMES = { "keyTyped", "func_73869_a", "a" };
-    private static final Map<Class<?>, Field[]> TEXT_FIELDS = new HashMap<>();
-    private static final Map<Class<?>, Method> KEY_TYPED_METHODS = new HashMap<>();
+    private static final String[] KEY_TYPED_NAMES = { "func_73869_a", "keyTyped", "a" };
+    private static final Field BOOK_IS_UNSIGNED = ReflectionHelper
+        .findField(GuiScreenBook.class, "field_146475_i", "bookIsUnsigned");
+    private static final Field BOOK_IS_SIGNING = ReflectionHelper
+        .findField(GuiScreenBook.class, "field_146480_s", "bookIsSigning");
+    private static final Map<Class<?>, Field[]> TEXT_FIELDS = new ConcurrentHashMap<>();
+    private static final Map<Class<?>, Method> KEY_TYPED_METHODS = new ConcurrentHashMap<>();
 
     private final GuiScreen screen;
     private final Object owner;
@@ -40,13 +44,10 @@ final class VanillaInputTarget implements InputTarget {
     static InputTarget find(GuiScreen screen) {
         if (screen instanceof GuiScreenBook) {
             GuiScreenBook book = (GuiScreenBook) screen;
-            boolean unsigned = ObfuscationReflectionHelper
-                .getPrivateValue(GuiScreenBook.class, book, "bookIsUnsigned", "field_146475_i");
-            if (!unsigned) {
+            if (!bookBoolean(BOOK_IS_UNSIGNED, book)) {
                 return null;
             }
-            boolean signing = ObfuscationReflectionHelper
-                .getPrivateValue(GuiScreenBook.class, book, "bookIsSigning", "field_146480_s");
+            boolean signing = bookBoolean(BOOK_IS_SIGNING, book);
             return new VanillaInputTarget(screen, screen, signing ? BOOK_TITLE : BOOK_PAGE);
         }
         if (screen instanceof GuiEditSign) {
@@ -96,21 +97,50 @@ final class VanillaInputTarget implements InputTarget {
     @Override
     public void insertText(String text) throws IllegalAccessException, InvocationTargetException {
         Method keyTyped = keyTypedMethod(screen.getClass());
+        if (kind == TEXT_FIELD) {
+            insertTextField(keyTyped, text);
+            return;
+        }
         for (int index = 0; index < text.length(); index++) {
-            insertCharacter(keyTyped, text.charAt(index));
+            keyTyped.invoke(screen, text.charAt(index), 0);
         }
     }
 
-    private void insertCharacter(Method keyTyped, char character)
+    private void insertTextField(Method keyTyped, String text)
         throws IllegalAccessException, InvocationTargetException {
-        String bufferedText = kind == TEXT_FIELD ? Lwjgl3ifyTextInput.replaceBufferedText(Character.toString(character))
-            : null;
-        try {
-            keyTyped.invoke(screen, character, 0);
-        } finally {
-            if (bufferedText != null) {
-                Lwjgl3ifyTextInput.restoreBufferedText(bufferedText);
+        String allowed = GuiTextFields.filterAllowed(text);
+        if (allowed.isEmpty()) {
+            return;
+        }
+        GuiTextFields.normalizeSelection((GuiTextField) owner);
+        if (Lwjgl3ifyTextInput.isAvailable()) {
+            String bufferedText = Lwjgl3ifyTextInput.replaceBufferedText(allowed);
+            try {
+                keyTyped.invoke(screen, allowed.charAt(0), 0);
+                if (!Lwjgl3ifyTextInput.isBufferEmpty()) {
+                    for (int index = 1; index < allowed.length(); index++) {
+                        char character = allowed.charAt(index);
+                        Lwjgl3ifyTextInput.replaceBufferedText(Character.toString(character));
+                        keyTyped.invoke(screen, character, 0);
+                    }
+                }
+            } finally {
+                if (bufferedText != null) {
+                    Lwjgl3ifyTextInput.restoreBufferedText(bufferedText);
+                }
             }
+            return;
+        }
+        for (int index = 0; index < allowed.length(); index++) {
+            keyTyped.invoke(screen, allowed.charAt(index), 0);
+        }
+    }
+
+    private static boolean bookBoolean(Field field, GuiScreenBook book) {
+        try {
+            return field.getBoolean(book);
+        } catch (IllegalAccessException failure) {
+            throw new IllegalStateException("Could not inspect GuiScreenBook state", failure);
         }
     }
 

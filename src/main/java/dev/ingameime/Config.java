@@ -2,6 +2,7 @@ package dev.ingameime;
 
 import java.io.File;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import net.minecraftforge.common.config.Configuration;
 
@@ -29,17 +30,35 @@ public final class Config {
     public static boolean showSchemaNotice = true;
     public static boolean showCandidateComments = true;
 
+    private static final Object IO_LOCK = new Object();
+    private static final AtomicBoolean PENDING_ASYNC_SAVE = new AtomicBoolean();
+    private static final AtomicBoolean ASYNC_WORKER_RUNNING = new AtomicBoolean();
+
     private static File configFile;
+    private static File loadedConfigFile;
+    private static Configuration configuration;
+    private static boolean shutdownHookRegistered;
+    private static long stateVersion;
+    private static long persistedVersion;
 
     private Config() {}
 
-    public static synchronized void load(File file) {
-        configFile = file;
-        Configuration config = new Configuration(file);
-        Values values = read(config);
-        apply(values);
-        if (config.hasChanged()) {
-            config.save();
+    public static void load(File file) {
+        synchronized (IO_LOCK) {
+            Configuration loaded = new Configuration(file);
+            Values values = read(loaded);
+            if (loaded.hasChanged()) {
+                loaded.save();
+            }
+            configuration = loaded;
+            loadedConfigFile = file;
+            synchronized (Config.class) {
+                configFile = file;
+                apply(values);
+                persistedVersion = ++stateVersion;
+                PENDING_ASYNC_SAVE.set(false);
+                ensureShutdownHookLocked();
+            }
         }
     }
 
@@ -60,15 +79,132 @@ public final class Config {
             showCandidateComments);
     }
 
-    public static synchronized void saveSchemaId(String requestedSchemaId) {
-        Values values = snapshot();
-        values.schemaId = requestedSchemaId;
-        save(values);
+    public static void saveSchemaId(String requestedSchemaId) {
+        long version;
+        synchronized (Config.class) {
+            Values values = snapshot();
+            values.schemaId = requestedSchemaId;
+            values = normalize(values);
+            apply(values);
+            version = ++stateVersion;
+            ensureShutdownHookLocked();
+        }
+        persistUpTo(version);
     }
 
-    public static synchronized void save(Values requested) {
+    public static void saveSchemaIdAsync(String requestedSchemaId) {
+        synchronized (Config.class) {
+            Values values = snapshot();
+            values.schemaId = requestedSchemaId;
+            values = normalize(values);
+            apply(values);
+            stateVersion++;
+            if (configFile == null) {
+                return;
+            }
+            PENDING_ASYNC_SAVE.set(true);
+            ensureShutdownHookLocked();
+        }
+        scheduleAsyncFlush();
+    }
+
+    public static void save(Values requested) {
         Values values = normalize(requested);
-        Configuration config = new Configuration(configFile);
+        long version;
+        synchronized (Config.class) {
+            apply(values);
+            version = ++stateVersion;
+            ensureShutdownHookLocked();
+        }
+        persistUpTo(version);
+    }
+
+    private static void persistUpTo(long minimumVersion) {
+        synchronized (IO_LOCK) {
+            File targetFile;
+            Values latestValues;
+            long versionToWrite;
+            synchronized (Config.class) {
+                targetFile = configFile;
+                versionToWrite = stateVersion;
+                if (targetFile == null || (persistedVersion >= minimumVersion && targetFile.equals(loadedConfigFile))) {
+                    return;
+                }
+                PENDING_ASYNC_SAVE.set(false);
+                latestValues = snapshot();
+            }
+            writeConfigurationLocked(targetFile, latestValues);
+            persistedVersion = versionToWrite;
+        }
+    }
+
+    static void flushPendingSave() {
+        if (!PENDING_ASYNC_SAVE.get() && !ASYNC_WORKER_RUNNING.get()) {
+            return;
+        }
+        synchronized (IO_LOCK) {
+            File targetFile;
+            Values latestValues;
+            long versionToWrite;
+            synchronized (Config.class) {
+                if (!PENDING_ASYNC_SAVE.getAndSet(false)) {
+                    return;
+                }
+                targetFile = configFile;
+                versionToWrite = stateVersion;
+                if (targetFile == null || (persistedVersion >= versionToWrite && targetFile.equals(loadedConfigFile))) {
+                    return;
+                }
+                latestValues = snapshot();
+            }
+            writeConfigurationLocked(targetFile, latestValues);
+            persistedVersion = versionToWrite;
+        }
+    }
+
+    private static void scheduleAsyncFlush() {
+        if (!ASYNC_WORKER_RUNNING.compareAndSet(false, true)) {
+            return;
+        }
+        Thread worker = new Thread(() -> {
+            try {
+                while (true) {
+                    try {
+                        flushPendingSave();
+                    } catch (RuntimeException failure) {
+                        InGameIME.LOG.warn("Could not persist InGameIME configuration asynchronously", failure);
+                    }
+                    ASYNC_WORKER_RUNNING.set(false);
+                    if (!PENDING_ASYNC_SAVE.get() || !ASYNC_WORKER_RUNNING.compareAndSet(false, true)) {
+                        break;
+                    }
+                }
+            } finally {
+                ASYNC_WORKER_RUNNING.set(false);
+            }
+        }, "InGameIME config saver");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private static void ensureShutdownHookLocked() {
+        if (shutdownHookRegistered) {
+            return;
+        }
+        shutdownHookRegistered = true;
+        Runtime.getRuntime()
+            .addShutdownHook(new Thread(() -> {
+                try {
+                    flushPendingSave();
+                } catch (Throwable ignored) {}
+            }, "InGameIME config flush"));
+    }
+
+    private static void writeConfigurationLocked(File targetFile, Values values) {
+        if (targetFile == null) {
+            return;
+        }
+        Configuration config = configurationLocked(targetFile);
         config
             .get(
                 Configuration.CATEGORY_GENERAL,
@@ -159,7 +295,14 @@ public final class Config {
                 "Show comments returned with Rime candidates.")
             .set(values.showCandidateComments);
         config.save();
-        apply(values);
+    }
+
+    private static Configuration configurationLocked(File targetFile) {
+        if (configuration == null || !targetFile.equals(loadedConfigFile)) {
+            configuration = new Configuration(targetFile);
+            loadedConfigFile = targetFile;
+        }
+        return configuration;
     }
 
     private static Values read(Configuration config) {

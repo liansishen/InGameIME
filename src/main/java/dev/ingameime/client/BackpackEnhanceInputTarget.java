@@ -45,18 +45,44 @@ final class BackpackEnhanceInputTarget implements InputTarget {
 
     @Override
     public void insertText(String text) throws ReflectiveOperationException {
-        for (int index = 0; index < text.length(); index++) {
-            char character = text.charAt(index);
-            String bufferedText = Lwjgl3ifyTextInput.replaceBufferedText(Character.toString(character));
+        insertText(text, Lwjgl3ifyTextInput.isAvailable());
+    }
+
+    void insertText(String text, boolean lwjgl3ify) throws ReflectiveOperationException {
+        String allowed = GuiTextFields.filterAllowed(text);
+        if (allowed.isEmpty()) {
+            return;
+        }
+        GuiTextField field = (GuiTextField) api.searchField.get(panel);
+        if (field != null) {
+            GuiTextFields.normalizeSelection(field);
+        }
+        if (lwjgl3ify) {
+            String bufferedText = Lwjgl3ifyTextInput.replaceBufferedText(allowed);
             try {
-                // The panel updates its query and invalidates filtered slots after each key.
-                api.keyTyped.invoke(panel, character, 0);
+                api.keyTyped.invoke(panel, allowed.charAt(0), 0);
+                if (!Lwjgl3ifyTextInput.isBufferEmpty()) {
+                    for (int index = 1; index < allowed.length(); index++) {
+                        char character = allowed.charAt(index);
+                        Lwjgl3ifyTextInput.replaceBufferedText(Character.toString(character));
+                        api.keyTyped.invoke(panel, character, 0);
+                    }
+                }
             } finally {
                 if (bufferedText != null) {
                     Lwjgl3ifyTextInput.restoreBufferedText(bufferedText);
                 }
             }
+            return;
         }
+        if (allowed.length() > 1 && field != null && (Boolean) api.isSearchFocused.invoke(panel)) {
+            if (GuiTextFields.isEnabled(field)) {
+                field.writeText(allowed.substring(0, allowed.length() - 1));
+            }
+            api.keyTyped.invoke(panel, allowed.charAt(allowed.length() - 1), 0);
+            return;
+        }
+        api.keyTyped.invoke(panel, allowed.charAt(0), 0);
     }
 
     static final class Api {

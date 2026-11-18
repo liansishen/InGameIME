@@ -6,6 +6,7 @@ ingameime.gui.tab.dictionary=物品名称索引
 ingameime.gui.tab.advanced=高级
 ingameime.gui.value.none=不可用
 ingameime.state.uninitialized=尚未初始化
+ingameime.state.initializing=正在初始化…
 ingameime.state.active=已启用
 ingameime.state.disabled=已停用
 ingameime.mode.chinese=中文

@@ -10,6 +10,9 @@ public final class KeyboardHook {
     private static final long SHIFT_TAP_NANOS = 350_000_000L;
     private static final Lwjgl3ifyKeyEventFilter DUPLICATE_TEXT_EVENTS = new Lwjgl3ifyKeyEventFilter();
 
+    private static Object observedScreen;
+    private static InputTarget observedTarget;
+    private static boolean hasObservedTarget;
     private static boolean leftShiftCandidate;
     private static boolean rightShiftCandidate;
     private static long leftShiftPressedAt;
@@ -19,10 +22,20 @@ public final class KeyboardHook {
     private KeyboardHook() {}
 
     public static void observeKeyboardEvent(Object screen) {
-        InputTarget target = InputTargets.find(screen);
         ClientIme ime = ClientIme.getInstance();
+        if (!ime.isActive()) {
+            clearObservedTarget();
+            DUPLICATE_TEXT_EVENTS.reset();
+            resetSwitchState();
+            return;
+        }
+
+        InputTarget target = InputTargets.find(screen);
         ime.updateInputTarget(screen, target);
-        if (target == null || !ime.isActive()) {
+        observedScreen = screen;
+        observedTarget = target;
+        hasObservedTarget = true;
+        if (target == null) {
             DUPLICATE_TEXT_EVENTS.reset();
             resetSwitchState();
             return;
@@ -51,9 +64,22 @@ public final class KeyboardHook {
     }
 
     public static boolean handleKeyboardInput(Object screen) {
-        InputTarget target = InputTargets.find(screen);
         ClientIme ime = ClientIme.getInstance();
-        ime.updateInputTarget(screen, target);
+        if (!ime.isActive()) {
+            clearObservedTarget();
+            DUPLICATE_TEXT_EVENTS.reset();
+            return false;
+        }
+
+        InputTarget target;
+        if (hasObservedTarget && observedScreen == screen) {
+            target = observedTarget;
+            clearObservedTarget();
+        } else {
+            clearObservedTarget();
+            target = InputTargets.find(screen);
+            ime.updateInputTarget(screen, target);
+        }
         if (target == null || !ime.isActive()) {
             DUPLICATE_TEXT_EVENTS.reset();
             return false;
@@ -79,6 +105,12 @@ public final class KeyboardHook {
             }
         }
         return consumed;
+    }
+
+    private static void clearObservedTarget() {
+        observedScreen = null;
+        observedTarget = null;
+        hasObservedTarget = false;
     }
 
     private static void observeShiftTap(InputTarget target, int key, boolean pressed, String shortcut) {

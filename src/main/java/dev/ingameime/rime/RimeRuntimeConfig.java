@@ -33,7 +33,7 @@ public final class RimeRuntimeConfig {
         return resolve(Minecraft.getMinecraft().mcDataDir);
     }
 
-    static RimeRuntimeConfig resolve(File gameDirectory) {
+    public static RimeRuntimeConfig resolve(File gameDirectory) {
         File instanceRoot = new File(gameDirectory, "ingameime");
         File nativeDirectory = configuredOrDefault(
             Config.nativeLibraryDirectory,

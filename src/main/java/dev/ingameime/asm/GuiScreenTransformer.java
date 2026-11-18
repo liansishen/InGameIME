@@ -2,6 +2,7 @@ package dev.ingameime.asm;
 
 import net.minecraft.launchwrapper.IClassTransformer;
 
+import org.apache.logging.log4j.LogManager;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
@@ -20,10 +21,19 @@ public final class GuiScreenTransformer implements IClassTransformer {
     private static final String GUI_SCREEN_CLASS = "net.minecraft.client.gui.GuiScreen";
     private static final String KEYBOARD = "org/lwjgl/input/Keyboard";
     private static final String HOOK_OWNER = "dev/ingameime/client/KeyboardHook";
+    private static volatile boolean injectionFailed;
+
+    public static boolean hasInjectionFailed() {
+        return injectionFailed;
+    }
+
+    static void resetInjectionState() {
+        injectionFailed = false;
+    }
 
     @Override
     public byte[] transform(String name, String transformedName, byte[] basicClass) {
-        if (!GUI_SCREEN_CLASS.equals(name) && !GUI_SCREEN_CLASS.equals(transformedName)) {
+        if (basicClass == null || (!GUI_SCREEN_CLASS.equals(name) && !GUI_SCREEN_CLASS.equals(transformedName))) {
             return basicClass;
         }
 
@@ -32,13 +42,17 @@ public final class GuiScreenTransformer implements IClassTransformer {
 
         for (MethodNode method : classNode.methods) {
             if (injectHooks(method, classNode.name)) {
+                injectionFailed = false;
                 ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
                 classNode.accept(writer);
                 return writer.toByteArray();
             }
         }
 
-        throw new IllegalStateException("Could not locate GuiScreen keyboard dispatch in " + name);
+        injectionFailed = true;
+        LogManager.getLogger("ingameime")
+            .error("Could not locate GuiScreen keyboard dispatch in {}; InGameIME will be disabled", name);
+        return basicClass;
     }
 
     private static boolean injectHooks(MethodNode method, String guiScreenOwner) {
@@ -122,5 +136,4 @@ public final class GuiScreenTransformer implements IClassTransformer {
         }
         return null;
     }
-
 }

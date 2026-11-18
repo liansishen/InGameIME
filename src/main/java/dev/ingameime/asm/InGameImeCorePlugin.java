@@ -6,6 +6,7 @@ import cpw.mods.fml.relauncher.IFMLLoadingPlugin;
 
 @IFMLLoadingPlugin.Name("InGameIME Core")
 @IFMLLoadingPlugin.MCVersion("1.7.10")
+@IFMLLoadingPlugin.SortingIndex(1001)
 @IFMLLoadingPlugin.TransformerExclusions("dev.ingameime.asm")
 public final class InGameImeCorePlugin implements IFMLLoadingPlugin {
 

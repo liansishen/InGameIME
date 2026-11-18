@@ -1,8 +1,10 @@
 package dev.ingameime.asm;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -10,6 +12,7 @@ import java.io.InputStream;
 
 import net.minecraft.client.gui.GuiScreen;
 
+import org.junit.After;
 import org.junit.Test;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
@@ -23,10 +26,25 @@ import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
+import cpw.mods.fml.relauncher.IFMLLoadingPlugin;
+
 public class GuiScreenTransformerTest {
 
     private static final String HOOK_OWNER = "dev/ingameime/client/KeyboardHook";
     private static final String GUI_SCREEN = "net/minecraft/client/gui/GuiScreen";
+
+    @After
+    public void resetFailureFlag() {
+        GuiScreenTransformer.resetInjectionState();
+    }
+
+    @Test
+    public void corePluginRunsAfterDeobfuscationSortingIndex() {
+        IFMLLoadingPlugin.SortingIndex sortingIndex = InGameImeCorePlugin.class
+            .getAnnotation(IFMLLoadingPlugin.SortingIndex.class);
+        assertNotNull(sortingIndex);
+        assertEquals(1001, sortingIndex.value());
+    }
 
     @Test
     public void observesEveryKeyboardEventAndGuardsGuiKeyboardDispatch() throws Exception {
@@ -34,6 +52,7 @@ public class GuiScreenTransformerTest {
             "net.minecraft.client.gui.GuiScreen",
             "net.minecraft.client.gui.GuiScreen",
             classBytes(GuiScreen.class));
+        assertFalse(GuiScreenTransformer.hasInjectionFailed());
         ClassNode guiScreen = new ClassNode();
         new ClassReader(transformed).accept(guiScreen, 0);
 
@@ -71,6 +90,7 @@ public class GuiScreenTransformerTest {
     public void transformsObfuscatedGuiScreenOwner() {
         byte[] transformed = new GuiScreenTransformer()
             .transform("bdw", "net.minecraft.client.gui.GuiScreen", obfuscatedGuiScreen());
+        assertFalse(GuiScreenTransformer.hasInjectionFailed());
         ClassNode guiScreen = new ClassNode();
         new ClassReader(transformed).accept(guiScreen, 0);
 
@@ -78,6 +98,28 @@ public class GuiScreenTransformerTest {
         assertNotNull(findCall(guiScreen, HOOK_OWNER, "observeKeyboardEvent"));
         assertNotNull(findCall(guiScreen, HOOK_OWNER, "handleKeyboardInput"));
         assertNotNull(findCall(guiScreen, "bdw", "l"));
+    }
+
+    @Test
+    public void returnsOriginalBytesAndFlagsFailureWhenDispatchCannotBeFound() {
+        ClassNode customGuiScreen = new ClassNode();
+        customGuiScreen.version = Opcodes.V1_7;
+        customGuiScreen.access = Opcodes.ACC_PUBLIC;
+        customGuiScreen.name = GUI_SCREEN;
+        customGuiScreen.superName = "java/lang/Object";
+        MethodNode empty = new MethodNode(Opcodes.ACC_PUBLIC, "handleInput", "()V", null, null);
+        empty.instructions.add(new InsnNode(Opcodes.RETURN));
+        empty.maxLocals = 1;
+        customGuiScreen.methods.add(empty);
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+        customGuiScreen.accept(writer);
+        byte[] original = writer.toByteArray();
+
+        byte[] result = new GuiScreenTransformer()
+            .transform("net.minecraft.client.gui.GuiScreen", "net.minecraft.client.gui.GuiScreen", original);
+
+        assertSame(original, result);
+        assertTrue(GuiScreenTransformer.hasInjectionFailed());
     }
 
     private static MethodInsnNode findCall(ClassNode classNode, String owner, String name) {

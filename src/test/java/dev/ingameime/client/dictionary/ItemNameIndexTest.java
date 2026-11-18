@@ -31,13 +31,20 @@ public class ItemNameIndexTest {
             index.search("slich", true)
                 .isEmpty());
         assertEquals(Collections.singletonList("Circuit 16"), index.search("circuit+16", true));
+        assertEquals(Collections.singletonList("Circuit 16"), index.search("uit+16", true));
+        assertEquals(Collections.singletonList(name), index.search("\u8d85\u5927\u578b", false));
+        assertTrue(
+            index.search("z", true)
+                .isEmpty());
+        assertEquals(Collections.singletonList(name), index.search("dslich", true, 1));
+
         Path file = temporary.getRoot()
             .toPath()
             .resolve("index.json");
         index.save(file);
-        assertEquals(
-            index.search("dslich", true),
-            ItemNameIndex.load(file)
-                .search("dslich", true));
+        ItemNameIndex loaded = ItemNameIndex.load(file);
+        assertEquals(index.search("dslich", true), loaded.search("dslich", true));
+        assertEquals(Collections.singletonList("Circuit 16"), loaded.search("uit+16", false));
+        assertEquals(Collections.singletonList(name), loaded.search("dslich", true, 1));
     }
 }

@@ -4,7 +4,7 @@ import static org.junit.Assert.assertEquals;
 
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import org.junit.After;
@@ -23,16 +23,16 @@ public class NeiInputTargetTest {
     }
 
     @Test
-    public void commitsCandidateAndPreservesSearchCallbacksAndQueuedText() throws Exception {
+    public void commitsCandidateOnceAndPreservesSearchCallbacksAndQueuedText() throws Exception {
         RecordingField field = new RecordingField();
         TextFieldHandler.textBuffer.setLength(0);
         TextFieldHandler.textBuffer.append(" x");
-        InputTarget target = target(field);
+        NeiInputTarget target = target(field);
 
         target.insertText("\u6d4b\u8bd5");
 
         assertEquals("\u6d4b\u8bd5", field.text());
-        assertEquals(Arrays.asList("", "\u6d4b"), field.oldTexts);
+        assertEquals(Collections.singletonList(""), field.oldTexts);
         assertEquals(" x", TextFieldHandler.textBuffer.toString());
 
         Lwjgl3ifyKeyEventFilter filter = new Lwjgl3ifyKeyEventFilter();
@@ -47,7 +47,7 @@ public class NeiInputTargetTest {
     }
 
     @Test
-    public void replacesSelectionAtCursor() throws Exception {
+    public void replacesSelectionAtCursorAndHandlesReverseSelection() throws Exception {
         RecordingField field = new RecordingField();
         FormattedTextField textField = field.field();
         textField.setText("abcd");
@@ -58,9 +58,31 @@ public class NeiInputTargetTest {
 
         assertEquals("a\u6d4b\u8bd5d", field.text());
         assertEquals(3, textField.getCursorPosition());
+
+        textField.setCursorPosition(3);
+        textField.setSelectionPos(1);
+        target(field).insertText("XYZ");
+        assertEquals("aXYZd", field.text());
+        assertEquals(4, textField.getCursorPosition());
     }
 
-    private static InputTarget target(TextField field) throws Exception {
+    @Test
+    public void commitsWithoutLwjgl3ifyBufferAndPreservesTruncationCallback() throws Exception {
+        RecordingField field = new RecordingField();
+        FormattedTextField textField = field.field();
+        textField.setMaxStringLength(5);
+        textField.setText("abc");
+        textField.setCursorPositionEnd();
+        field.oldTexts.clear();
+
+        target(field).insertText("\u52a8\u529b\u4ed3", false);
+
+        assertEquals("abc\u52a8\u529b", field.text());
+        assertEquals(5, textField.getCursorPosition());
+        assertEquals(Collections.singletonList("abc"), field.oldTexts);
+    }
+
+    private static NeiInputTarget target(TextField field) throws Exception {
         Constructor<NeiInputTarget> constructor = NeiInputTarget.class.getDeclaredConstructor(TextField.class);
         constructor.setAccessible(true);
         return constructor.newInstance(field);

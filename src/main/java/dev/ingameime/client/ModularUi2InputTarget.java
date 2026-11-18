@@ -9,6 +9,8 @@ import cpw.mods.fml.common.Loader;
 
 final class ModularUi2InputTarget implements InputTarget {
 
+    private static final boolean LWJGL3IFY_LOADED = Loader.isModLoaded("lwjgl3ify");
+
     private final BaseTextFieldWidget<?> textField;
 
     private ModularUi2InputTarget(BaseTextFieldWidget<?> textField) {
@@ -46,7 +48,7 @@ final class ModularUi2InputTarget implements InputTarget {
 
     @Override
     public void insertText(String text) {
-        if (Loader.isModLoaded("lwjgl3ify")) {
+        if (LWJGL3IFY_LOADED) {
             Lwjgl3ifyInput.insertText(textField, text);
             return;
         }

@@ -9,17 +9,12 @@ final class KeyMapper {
     static final int CONTROL_MASK = 1 << 2;
     static final int ALT_MASK = 1 << 3;
 
-    private static boolean capsLock;
-
     private KeyMapper() {}
 
     static KeyStroke current(boolean composing) {
         int eventKey = Keyboard.getEventKey();
         char eventCharacter = Keyboard.getEventCharacter();
 
-        if (eventKey == Keyboard.KEY_CAPITAL) {
-            capsLock = !capsLock;
-        }
         int modifiers = currentModifiers();
         if (!composing && isVanillaEditingShortcut(eventKey, modifiers)) {
             return null;
@@ -50,9 +45,6 @@ final class KeyMapper {
         }
         if (Keyboard.isKeyDown(Keyboard.KEY_LMENU) || Keyboard.isKeyDown(Keyboard.KEY_RMENU)) {
             modifiers |= ALT_MASK;
-        }
-        if (capsLock) {
-            modifiers |= LOCK_MASK;
         }
         return modifiers;
     }

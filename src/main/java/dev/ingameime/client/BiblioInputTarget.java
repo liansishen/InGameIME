@@ -2,9 +2,9 @@ package dev.ingameime.client;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import net.minecraft.client.gui.GuiScreen;
 
@@ -16,7 +16,7 @@ final class BiblioInputTarget implements InputTarget {
     private static final Field Y_POSITION = textFieldMember("yPos");
     private static final Field WIDTH = textFieldMember("width");
     private static final Field HEIGHT = textFieldMember("height");
-    private static final Map<Class<?>, Field[]> TEXT_FIELDS = new HashMap<>();
+    private static final Map<Class<?>, Field[]> TEXT_FIELDS = new ConcurrentHashMap<>();
 
     private final GuiBiblioTextField textField;
 

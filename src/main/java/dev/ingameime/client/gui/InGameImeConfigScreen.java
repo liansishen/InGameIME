@@ -57,6 +57,8 @@ public final class InGameImeConfigScreen extends GuiScreen {
     private String implicitUserDirectory;
     private GuiTextField schemaId;
     private GuiTextField requiredModules;
+    private boolean previousRepeatEvents;
+    private boolean repeatEventsRecorded;
 
     public InGameImeConfigScreen(GuiScreen parent) {
         this.parent = parent;
@@ -65,13 +67,17 @@ public final class InGameImeConfigScreen extends GuiScreen {
 
     @Override
     public void initGui() {
+        if (!repeatEventsRecorded) {
+            previousRepeatEvents = Keyboard.areRepeatEventsEnabled();
+            repeatEventsRecorded = true;
+        }
         Keyboard.enableRepeatEvents(true);
         rebuildControls();
     }
 
     @Override
     public void onGuiClosed() {
-        Keyboard.enableRepeatEvents(false);
+        Keyboard.enableRepeatEvents(previousRepeatEvents);
     }
 
     @Override
@@ -402,14 +408,14 @@ public final class InGameImeConfigScreen extends GuiScreen {
 
     private void drawStatus() {
         ClientIme ime = ClientIme.getInstance();
+        String stateName = ime.getStateName();
+        int stateColor = "ACTIVE".equals(stateName) ? 0x78e08f : "INITIALIZING".equals(stateName) ? 0xe5c07b : 0xe06c75;
         int y = 64;
         y = drawLine(
             y,
             "ingameime.gui.status.state",
-            tr(
-                "ingameime.state." + ime.getStateName()
-                    .toLowerCase(Locale.ROOT)),
-            ime.isActive() ? 0x78e08f : 0xe06c75);
+            tr("ingameime.state." + stateName.toLowerCase(Locale.ROOT)),
+            stateColor);
         y = drawLine(
             y,
             "ingameime.gui.status.mode",
