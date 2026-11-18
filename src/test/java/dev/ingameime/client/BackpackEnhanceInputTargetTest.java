@@ -76,7 +76,7 @@ public class BackpackEnhanceInputTargetTest {
     }
 
     @Test
-    public void commitsThroughPanelAndPreservesQueuedText() throws Exception {
+    public void commitsThroughPanelOnceAndPreservesQueuedText() throws Exception {
         panel.searchField.setText("ab");
         panel.searchField.setCursorPosition(1);
         TextFieldHandler.textBuffer.append("cc");
@@ -84,9 +84,28 @@ public class BackpackEnhanceInputTargetTest {
         target.insertText("中文");
         assertEquals("a中文b", panel.searchField.getText());
         assertEquals("a中文b", panel.searchText);
-        assertEquals(2, panel.filterUpdates);
+        assertEquals(1, panel.filterUpdates);
         assertEquals("cc", TextFieldHandler.textBuffer.toString());
         assertTrue(panel.searchField.isFocused());
+    }
+
+    @Test
+    public void commitsWithoutLwjgl3ifyAndHandlesReverseSelectionWithMaxLength() throws Exception {
+        GuiTextField vanillaField = new GuiTextField(null, 10, 20, 120, 14);
+        vanillaField.setMaxStringLength(5);
+        vanillaField.setFocused(true);
+        vanillaField.setText("abcd");
+        vanillaField.setCursorPosition(3);
+        vanillaField.setSelectionPos(1);
+        panel.searchField = vanillaField;
+
+        BackpackEnhanceInputTarget target = (BackpackEnhanceInputTarget) api.find(screen);
+        target.insertText("一二三四", false);
+
+        assertEquals("a一二三d", vanillaField.getText());
+        assertEquals("a一二三d", panel.searchText);
+        assertEquals(4, vanillaField.getCursorPosition());
+        assertEquals(1, panel.filterUpdates);
     }
 
     @Test

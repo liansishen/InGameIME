@@ -13,6 +13,10 @@ final class Lwjgl3ifyTextInput {
         return TEXT_BUFFER != null;
     }
 
+    static boolean isBufferEmpty() {
+        return TEXT_BUFFER == null || TEXT_BUFFER.length() == 0;
+    }
+
     static String replaceBufferedText(String text) {
         if (TEXT_BUFFER == null) {
             return null;

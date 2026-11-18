@@ -9,11 +9,16 @@ import dev.ingameime.rime.RimeSnapshot;
 
 final class ItemSearchSession {
 
+    private static final int SEARCH_LIMIT = 200;
+
     private String query;
     private boolean direct;
     private int cursor;
     private int selected;
+    private ItemNameIndex lastIndex;
+    private boolean lastFlypy;
     private List<String> matches = Collections.emptyList();
+    private RimeSnapshot cachedSnapshot = RimeSnapshot.EMPTY;
 
     boolean isActive() {
         return query != null;
@@ -23,6 +28,8 @@ final class ItemSearchSession {
         this.query = query;
         this.direct = direct;
         cursor = query.length();
+        matches = Collections.emptyList();
+        selected = 0;
         refresh(index, flypy);
     }
 
@@ -36,8 +43,21 @@ final class ItemSearchSession {
 
     void reset() {
         query = null;
+        lastIndex = null;
+        lastFlypy = false;
         matches = Collections.emptyList();
         selected = 0;
+        cachedSnapshot = RimeSnapshot.EMPTY;
+    }
+
+    void sync(ItemNameIndex index, boolean flypy) {
+        if (!isActive()) {
+            return;
+        }
+        ItemNameIndex resolved = normalizeIndex(index);
+        if (resolved != lastIndex || flypy != lastFlypy) {
+            refresh(resolved, flypy);
+        }
     }
 
     String selection() {
@@ -47,28 +67,44 @@ final class ItemSearchSession {
     void edit(int key, ItemNameIndex index, boolean flypy) {
         switch (key) {
             case 0xff52:
+                sync(index, flypy);
                 selected = Math.max(0, selected - 1);
+                rebuildSnapshot();
                 return;
             case 0xff54:
+                sync(index, flypy);
                 selected = Math.min(Math.max(0, matches.size() - 1), selected + 1);
+                rebuildSnapshot();
                 return;
             case 0xff55:
+                sync(index, flypy);
                 selected = Math.max(0, selected - 5);
+                rebuildSnapshot();
                 return;
             case 0xff56:
+                sync(index, flypy);
                 selected = Math.min(Math.max(0, matches.size() - 1), selected + 5);
+                rebuildSnapshot();
                 return;
             case 0xff51:
+                sync(index, flypy);
                 cursor = Math.max(0, cursor - 1);
+                rebuildSnapshot();
                 return;
             case 0xff53:
+                sync(index, flypy);
                 cursor = Math.min(query.length(), cursor + 1);
+                rebuildSnapshot();
                 return;
             case 0xff50:
+                sync(index, flypy);
                 cursor = 0;
+                rebuildSnapshot();
                 return;
             case 0xff57:
+                sync(index, flypy);
                 cursor = query.length();
+                rebuildSnapshot();
                 return;
             case 0xff08:
                 if (cursor > 0) {
@@ -91,23 +127,40 @@ final class ItemSearchSession {
     }
 
     private void refresh(ItemNameIndex index, boolean flypy) {
+        ItemNameIndex resolved = normalizeIndex(index);
         String previous = selection();
-        matches = index.search(query, flypy);
+        lastIndex = resolved;
+        lastFlypy = flypy;
+        matches = resolved.search(query, flypy, SEARCH_LIMIT);
         selected = Math.max(0, matches.indexOf(previous));
+        rebuildSnapshot();
     }
 
-    RimeSnapshot snapshot() {
-        List<RimeSnapshot.Candidate> candidates = new ArrayList<>();
+    private static ItemNameIndex normalizeIndex(ItemNameIndex index) {
+        return index == null ? ItemNameIndex.EMPTY : index;
+    }
+
+    private void rebuildSnapshot() {
+        if (query == null) {
+            cachedSnapshot = RimeSnapshot.EMPTY;
+            return;
+        }
         int start = selected / 5 * 5;
-        for (int i = start; i < Math.min(start + 5, matches.size()); i++) {
+        int end = Math.min(start + 5, matches.size());
+        List<RimeSnapshot.Candidate> candidates = end > start ? new ArrayList<>(end - start) : Collections.emptyList();
+        for (int i = start; i < end; i++) {
             candidates.add(new RimeSnapshot.Candidate("", matches.get(i), ""));
         }
         String prefix = direct ? ":" : "";
-        return new RimeSnapshot(
+        cachedSnapshot = new RimeSnapshot(
             prefix + query,
             cursor + prefix.length(),
             true,
             candidates,
             matches.isEmpty() ? -1 : selected - start);
+    }
+
+    RimeSnapshot snapshot() {
+        return cachedSnapshot;
     }
 }

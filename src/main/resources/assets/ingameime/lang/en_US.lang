@@ -6,6 +6,7 @@ ingameime.gui.tab.dictionary=Item index
 ingameime.gui.tab.advanced=Advanced
 ingameime.gui.value.none=Not available
 ingameime.state.uninitialized=Not initialized
+ingameime.state.initializing=Initializing...
 ingameime.state.active=Active
 ingameime.state.disabled=Disabled
 ingameime.mode.chinese=Chinese

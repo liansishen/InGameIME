@@ -59,6 +59,7 @@ final class ClipboardAnywhereInputTarget implements InputTarget {
 
     @Override
     public void insertText(String text) {
+        GuiTextFields.normalizeSelection(textField);
         textField.writeText(text);
     }
 

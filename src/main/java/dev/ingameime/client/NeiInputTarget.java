@@ -2,6 +2,8 @@ package dev.ingameime.client;
 
 import java.lang.reflect.Field;
 
+import net.minecraft.client.gui.GuiTextField;
+
 import codechicken.nei.LayoutManager;
 import codechicken.nei.RecipeSearchField;
 import codechicken.nei.SearchField;
@@ -10,7 +12,8 @@ import codechicken.nei.recipe.GuiRecipe;
 
 final class NeiInputTarget implements InputTarget {
 
-    private static final Field RECIPE_SEARCH_FIELD = locateRecipeSearchField();
+    private static final Field RECIPE_SEARCH_FIELD = locateField(GuiRecipe.class, "searchField");
+    private static final Field INNER_FIELD = locateField(TextField.class, "field");
 
     private final TextField searchField;
 
@@ -48,16 +51,49 @@ final class NeiInputTarget implements InputTarget {
 
     @Override
     public void insertText(String text) {
-        for (int index = 0; index < text.length(); index++) {
-            char character = text.charAt(index);
-            String bufferedText = Lwjgl3ifyTextInput.replaceBufferedText(Character.toString(character));
+        insertText(text, Lwjgl3ifyTextInput.isAvailable());
+    }
+
+    void insertText(String text, boolean lwjgl3ify) {
+        String allowed = GuiTextFields.filterAllowed(text);
+        if (allowed.isEmpty() || !searchField.focused()) {
+            return;
+        }
+        GuiTextField inner = innerField();
+        if (inner == null) {
+            return;
+        }
+        GuiTextFields.normalizeSelection(inner);
+        if (lwjgl3ify) {
+            String bufferedText = Lwjgl3ifyTextInput.replaceBufferedText(allowed);
             try {
-                searchField.handleKeyPress(0, character);
+                searchField.handleKeyPress(0, allowed.charAt(0));
+                if (!Lwjgl3ifyTextInput.isBufferEmpty()) {
+                    for (int index = 1; index < allowed.length(); index++) {
+                        char character = allowed.charAt(index);
+                        Lwjgl3ifyTextInput.replaceBufferedText(Character.toString(character));
+                        searchField.handleKeyPress(0, character);
+                    }
+                }
             } finally {
                 if (bufferedText != null) {
                     Lwjgl3ifyTextInput.restoreBufferedText(bufferedText);
                 }
             }
+            return;
+        }
+        String oldText = searchField.text();
+        if (GuiTextFields.isEnabled(inner)) {
+            inner.writeText(allowed);
+        }
+        searchField.onTextChange(oldText);
+    }
+
+    private GuiTextField innerField() {
+        try {
+            return (GuiTextField) INNER_FIELD.get(searchField);
+        } catch (IllegalAccessException failure) {
+            throw new IllegalStateException("Could not inspect NEI internal text field", failure);
         }
     }
 
@@ -69,13 +105,13 @@ final class NeiInputTarget implements InputTarget {
         }
     }
 
-    private static Field locateRecipeSearchField() {
+    private static Field locateField(Class<?> owner, String name) {
         try {
-            Field field = GuiRecipe.class.getDeclaredField("searchField");
+            Field field = owner.getDeclaredField(name);
             field.setAccessible(true);
             return field;
         } catch (NoSuchFieldException failure) {
-            throw new IllegalStateException("Could not locate NEI recipe search field", failure);
+            throw new IllegalStateException("Could not locate NEI field " + owner.getName() + "." + name, failure);
         }
     }
 }

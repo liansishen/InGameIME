@@ -26,6 +26,13 @@ public final class JnaRimeBackend implements RimeBackend {
     private static final int MAX_SCHEMA_COUNT = 4096;
     private static final int MAX_CANDIDATE_COUNT = 64;
     private static final int GET_INPUT_FUNCTION_INDEX = 69;
+    private static final int SCHEMA_LIST_ITEM_SIZE = new RimeSchemaListItem().size();
+    private static final int CANDIDATE_SIZE = new RimeCandidate().size();
+
+    private final RimeCommit reusableCommit = new RimeCommit();
+    private final RimeContext reusableContext = new RimeContext();
+    private final RimeStatus reusableStatus = new RimeStatus();
+    private final Memory asciiModeOption = utf8("ascii_mode");
 
     private NativeLibrary library;
     private TraitsHolder traits;
@@ -49,6 +56,7 @@ public final class JnaRimeBackend implements RimeBackend {
     private Pointer session;
     private boolean initialized;
     private RimeSnapshot snapshot = RimeSnapshot.EMPTY;
+    private String currentRawInput = "";
     private String activeSchemaId = "";
     private String activeSchemaName = "default schema";
     private boolean activeAsciiMode;
@@ -107,6 +115,7 @@ public final class JnaRimeBackend implements RimeBackend {
             }
             updateStatus(readStatus(config.getSchemaId()));
             snapshot = readContext();
+            refreshRawInput();
         } catch (RuntimeException | Error failure) {
             try {
                 close();
@@ -122,6 +131,7 @@ public final class JnaRimeBackend implements RimeBackend {
         boolean consumed = processKey.invokeInt(new Object[] { session, keycode, modifiers }) != 0;
         String commitText = readCommit();
         snapshot = readContext();
+        refreshRawInput();
         SessionStatus status = readStatus("");
         activeAsciiMode = status.asciiMode;
         if (availableSchemaIds.contains(status.schemaId)) {
@@ -134,6 +144,7 @@ public final class JnaRimeBackend implements RimeBackend {
     public RimeSnapshot clearComposition() {
         clearComposition.invokeVoid(new Object[] { session });
         snapshot = readContext();
+        currentRawInput = "";
         return snapshot;
     }
 
@@ -141,9 +152,9 @@ public final class JnaRimeBackend implements RimeBackend {
     public RimeKeyResult changeAsciiMode(boolean asciiMode, boolean commitRawInput) {
         String commitText = commitRawInput ? readRawInput() : "";
         clearComposition.invokeVoid(new Object[] { session });
-        Memory option = utf8("ascii_mode");
-        setOption.invokeVoid(new Object[] { session, option, asciiMode ? 1 : 0 });
+        setOption.invokeVoid(new Object[] { session, asciiModeOption, asciiMode ? 1 : 0 });
         snapshot = readContext();
+        refreshRawInput();
         SessionStatus status = readStatus("");
         activeAsciiMode = status.asciiMode;
         if (availableSchemaIds.contains(status.schemaId)) {
@@ -160,9 +171,9 @@ public final class JnaRimeBackend implements RimeBackend {
         if (selectSchema.invokeInt(new Object[] { session, requestedSchema }) == 0) {
             throw new IllegalStateException("librime rejected schema reload: " + schemaId);
         }
-        Memory option = utf8("ascii_mode");
-        setOption.invokeVoid(new Object[] { session, option, asciiMode ? 1 : 0 });
+        setOption.invokeVoid(new Object[] { session, asciiModeOption, asciiMode ? 1 : 0 });
         snapshot = readContext();
+        refreshRawInput();
         updateStatus(readStatus(schemaId));
         return new RimeKeyResult(true, "", snapshot, activeSchemaId, activeSchemaName, activeAsciiMode);
     }
@@ -195,6 +206,7 @@ public final class JnaRimeBackend implements RimeBackend {
         NativeLibrary currentLibrary = library;
         session = null;
         library = null;
+        currentRawInput = "";
         try {
             if (currentSession != null && destroySession != null) {
                 destroySession.invokeInt(new Object[] { currentSession });
@@ -246,9 +258,8 @@ public final class JnaRimeBackend implements RimeBackend {
                 throw new IllegalStateException("librime returned an invalid schema list");
             }
             Set<String> schemaIds = new LinkedHashSet<>();
-            int itemSize = new RimeSchemaListItem().size();
             for (long index = 0; index < count; index++) {
-                RimeSchemaListItem item = new RimeSchemaListItem(schemas.list.share(index * itemSize));
+                RimeSchemaListItem item = new RimeSchemaListItem(schemas.list.share(index * SCHEMA_LIST_ITEM_SIZE));
                 String schemaId = string(item.schemaId);
                 if (!schemaId.isEmpty()) {
                     schemaIds.add(schemaId);
@@ -267,17 +278,16 @@ public final class JnaRimeBackend implements RimeBackend {
     }
 
     private SessionStatus readStatus(String requestedSchema) {
-        RimeStatus status = new RimeStatus();
-        status.initializeSize();
-        if (getStatus.invokeInt(new Object[] { session, status.getPointer() }) == 0) {
+        reusableStatus.prepare();
+        if (getStatus.invokeInt(new Object[] { session, reusableStatus.getPointer() }) == 0) {
             throw new IllegalStateException("librime could not read session status");
         }
 
         try {
-            status.read();
-            String schemaId = string(status.schemaId);
-            String schemaName = string(status.schemaName);
-            if (status.isDisabled != 0) {
+            reusableStatus.read();
+            String schemaId = string(reusableStatus.schemaId);
+            String schemaName = string(reusableStatus.schemaName);
+            if (reusableStatus.isDisabled != 0) {
                 throw new IllegalStateException("the selected Rime schema is disabled");
             }
             if (schemaId.isEmpty()) {
@@ -286,9 +296,12 @@ public final class JnaRimeBackend implements RimeBackend {
             if (!requestedSchema.isEmpty() && !requestedSchema.equals(schemaId)) {
                 throw new IllegalStateException("librime selected " + schemaId + " instead of " + requestedSchema);
             }
-            return new SessionStatus(schemaId, schemaName.isEmpty() ? schemaId : schemaName, status.isAsciiMode != 0);
+            return new SessionStatus(
+                schemaId,
+                schemaName.isEmpty() ? schemaId : schemaName,
+                reusableStatus.isAsciiMode != 0);
         } finally {
-            freeStatus.invokeInt(new Object[] { status.getPointer() });
+            freeStatus.invokeInt(new Object[] { reusableStatus.getPointer() });
         }
     }
 
@@ -299,55 +312,52 @@ public final class JnaRimeBackend implements RimeBackend {
     }
 
     private String readCommit() {
-        RimeCommit commit = new RimeCommit();
-        commit.initializeSize();
-        if (getCommit.invokeInt(new Object[] { session, commit.getPointer() }) == 0) {
+        reusableCommit.prepare();
+        if (getCommit.invokeInt(new Object[] { session, reusableCommit.getPointer() }) == 0) {
             return "";
         }
         try {
-            commit.read();
-            return string(commit.text);
+            reusableCommit.read();
+            return string(reusableCommit.text);
         } finally {
-            freeCommit.invokeInt(new Object[] { commit.getPointer() });
+            freeCommit.invokeInt(new Object[] { reusableCommit.getPointer() });
         }
     }
 
     private RimeSnapshot readContext() {
-        RimeContext context = new RimeContext();
-        context.initializeSize();
-        if (getContext.invokeInt(new Object[] { session, context.getPointer() }) == 0) {
+        reusableContext.prepare();
+        if (getContext.invokeInt(new Object[] { session, reusableContext.getPointer() }) == 0) {
             return RimeSnapshot.EMPTY;
         }
 
         try {
-            context.read();
-            String preedit = string(context.composition.preedit);
-            int count = context.menu.numCandidates;
-            if (count < 0 || count > MAX_CANDIDATE_COUNT || (count > 0 && context.menu.candidates == null)) {
+            reusableContext.read();
+            String preedit = string(reusableContext.composition.preedit);
+            int count = reusableContext.menu.numCandidates;
+            if (count < 0 || count > MAX_CANDIDATE_COUNT || (count > 0 && reusableContext.menu.candidates == null)) {
                 throw new IllegalStateException("librime returned an invalid candidate list");
             }
 
             List<RimeSnapshot.Candidate> candidates = new ArrayList<>(count);
-            int candidateSize = new RimeCandidate().size();
-            String selectKeys = string(context.menu.selectKeys);
+            String selectKeys = string(reusableContext.menu.selectKeys);
             for (int index = 0; index < count; index++) {
                 RimeCandidate candidate = new RimeCandidate(
-                    context.menu.candidates.share((long) index * candidateSize));
+                    reusableContext.menu.candidates.share((long) index * CANDIDATE_SIZE));
                 candidates.add(
                     new RimeSnapshot.Candidate(
-                        candidateLabel(context, selectKeys, index),
+                        candidateLabel(reusableContext, selectKeys, index),
                         string(candidate.text),
                         string(candidate.comment)));
             }
-            boolean composing = context.composition.length > 0 || !preedit.isEmpty() || count > 0;
+            boolean composing = reusableContext.composition.length > 0 || !preedit.isEmpty() || count > 0;
             return new RimeSnapshot(
                 preedit,
-                context.composition.cursorPosition,
+                reusableContext.composition.cursorPosition,
                 composing,
                 candidates,
-                context.menu.highlightedCandidateIndex);
+                reusableContext.menu.highlightedCandidateIndex);
         } finally {
-            freeContext.invokeInt(new Object[] { context.getPointer() });
+            freeContext.invokeInt(new Object[] { reusableContext.getPointer() });
         }
     }
 
@@ -413,7 +423,11 @@ public final class JnaRimeBackend implements RimeBackend {
 
     @Override
     public String getRawInput() {
-        return readRawInput();
+        return currentRawInput;
+    }
+
+    private void refreshRawInput() {
+        currentRawInput = snapshot.isComposing() ? readRawInput() : "";
     }
 
     private String readRawInput() {
@@ -608,9 +622,10 @@ public final class JnaRimeBackend implements RimeBackend {
         public int dataSize;
         public Pointer text;
 
-        void initializeSize() {
+        void prepare() {
+            clear();
             dataSize = size() - Integer.BYTES;
-            write();
+            writeField("dataSize");
         }
     }
 
@@ -623,9 +638,10 @@ public final class JnaRimeBackend implements RimeBackend {
         public Pointer commitTextPreview;
         public Pointer selectLabels;
 
-        void initializeSize() {
+        void prepare() {
+            clear();
             dataSize = size() - Integer.BYTES;
-            write();
+            writeField("dataSize");
         }
     }
 
@@ -644,9 +660,10 @@ public final class JnaRimeBackend implements RimeBackend {
         public int isTraditional;
         public int isAsciiPunctuation;
 
-        void initializeSize() {
+        void prepare() {
+            clear();
             dataSize = size() - Integer.BYTES;
-            write();
+            writeField("dataSize");
         }
     }
 

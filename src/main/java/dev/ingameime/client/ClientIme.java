@@ -1,13 +1,20 @@
 package dev.ingameime.client;
 
+import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
+
+import net.minecraft.client.Minecraft;
 
 import dev.ingameime.Config;
 import dev.ingameime.InGameIME;
+import dev.ingameime.asm.GuiScreenTransformer;
 import dev.ingameime.client.dictionary.GameDictionaryController;
 import dev.ingameime.client.dictionary.ItemNameIndex;
 import dev.ingameime.rime.RimeBackend;
@@ -20,9 +27,15 @@ public final class ClientIme {
 
     private static final ClientIme INSTANCE = new ClientIme();
     private static final long SCHEMA_NOTICE_MILLIS = 3000L;
+    private static final long SHUTDOWN_JOIN_MILLIS = 5000L;
+    private static final int ITEM_CANDIDATE_LIMIT = 64;
 
-    private State state = State.UNINITIALIZED;
+    private volatile State state = State.UNINITIALIZED;
     private RimeBackend backend;
+    private Thread initThread;
+    private boolean shutdownHookRegistered;
+    private boolean shutdownRequested;
+    private boolean pendingSchemaReload;
     private RimeSnapshot snapshot = RimeSnapshot.EMPTY;
     private String activeSchemaId = "";
     private String activeSchemaName = "";
@@ -35,10 +48,15 @@ public final class ClientIme {
     private InputTarget activeTarget;
     private boolean inputModeInitialized;
     private final ItemSearchSession itemSearch = new ItemSearchSession();
-    private List<String> itemMatches = new ArrayList<>();
+    private List<String> itemMatches = Collections.emptyList();
     private int itemSelection = -1;
     private String lastItemQuery = "";
     private ItemNameIndex lastIndex = ItemNameIndex.EMPTY;
+    private RimeSnapshot lastMatchedSnapshot = RimeSnapshot.EMPTY;
+    private RimeSnapshot cachedBaseSnapshot = RimeSnapshot.EMPTY;
+    private List<String> cachedItemMatches = Collections.emptyList();
+    private int cachedItemSelection = -1;
+    private RimeSnapshot cachedViewSnapshot = RimeSnapshot.EMPTY;
 
     private final Supplier<ItemNameIndex> itemIndex;
 
@@ -56,41 +74,113 @@ public final class ClientIme {
         return INSTANCE;
     }
 
-    public synchronized void start() {
-        if (state != State.UNINITIALIZED) {
-            return;
+    public void start() {
+        File gameDirectory;
+        synchronized (this) {
+            if (state != State.UNINITIALIZED) {
+                return;
+            }
+            if (!Config.enabled) {
+                disable("disabled by configuration", null);
+                return;
+            }
+            if (GuiScreenTransformer.hasInjectionFailed()) {
+                disable("GuiScreen keyboard hook injection failed", null);
+                return;
+            }
+            gameDirectory = Minecraft.getMinecraft().mcDataDir;
         }
-        if (!Config.enabled) {
-            disable("disabled by configuration", null);
-            return;
-        }
+        startAsync(gameDirectory, ClientIme::createJnaBackend, true);
+    }
 
+    void startAsync(File gameDirectory, BackendFactory backendFactory, boolean registerShutdownHook) {
+        Thread initializer;
+        synchronized (this) {
+            if (state != State.UNINITIALIZED) {
+                return;
+            }
+            if (!Config.enabled) {
+                disable("disabled by configuration", null);
+                return;
+            }
+            if (GuiScreenTransformer.hasInjectionFailed()) {
+                disable("GuiScreen keyboard hook injection failed", null);
+                return;
+            }
+            shutdownRequested = false;
+            pendingSchemaReload = false;
+            state = State.INITIALIZING;
+            if (registerShutdownHook && !shutdownHookRegistered) {
+                shutdownHookRegistered = true;
+                Runtime.getRuntime()
+                    .addShutdownHook(new Thread(this::shutdown, "InGameIME shutdown"));
+            }
+            initializer = new Thread(
+                () -> initializeInBackground(gameDirectory, backendFactory),
+                "InGameIME initializer");
+            initializer.setDaemon(true);
+            initThread = initializer;
+        }
+        initializer.start();
+    }
+
+    private void initializeInBackground(File gameDirectory, BackendFactory backendFactory) {
+        RimeBackend initializedBackend = null;
         try {
-            RimeRuntimeConfig runtimeConfig = RimeRuntimeConfig.resolve();
+            RimeRuntimeConfig runtimeConfig = RimeRuntimeConfig.resolve(gameDirectory);
             try {
                 RimePatchInstaller.install(runtimeConfig.getUserDataDirectory());
             } catch (IOException failure) {
                 InGameIME.LOG.warn("Could not install the InGameIME game dictionary Rime patch", failure);
             }
-            ClassLoader loader = ClientIme.class.getClassLoader();
-            Class.forName("com.sun.jna.Native", false, loader);
-            Class<? extends RimeBackend> backendClass = Class
-                .forName("dev.ingameime.rime.jna.JnaRimeBackend", true, loader)
-                .asSubclass(RimeBackend.class);
-            RimeBackend initializedBackend = backendClass.getConstructor(RimeRuntimeConfig.class)
-                .newInstance(runtimeConfig);
-            backend = initializedBackend;
-            activeSchemaId = initializedBackend.getSchemaId();
-            activeSchemaName = initializedBackend.getSchemaName();
-            asciiMode = initializedBackend.isAsciiMode();
-            disableReason = "";
-            state = State.ACTIVE;
-            InGameIME.LOG.info("InGameIME active with {}", initializedBackend.getDescription());
-            Runtime.getRuntime()
-                .addShutdownHook(new Thread(this::shutdown, "InGameIME shutdown"));
+            initializedBackend = backendFactory.create(runtimeConfig);
+
+            boolean closeImmediately = false;
+            synchronized (this) {
+                if (shutdownRequested || state != State.INITIALIZING) {
+                    closeImmediately = true;
+                } else {
+                    backend = initializedBackend;
+                    activeSchemaId = initializedBackend.getSchemaId();
+                    activeSchemaName = initializedBackend.getSchemaName();
+                    asciiMode = initializedBackend.isAsciiMode();
+                    disableReason = "";
+                    state = State.ACTIVE;
+                    InGameIME.LOG.info("InGameIME active with {}", initializedBackend.getDescription());
+                    if (pendingSchemaReload) {
+                        pendingSchemaReload = false;
+                        reloadSchema();
+                    }
+                }
+            }
+            if (closeImmediately) {
+                closeQuietly(initializedBackend);
+            }
         } catch (Throwable failure) {
-            disable(failureMessage(failure), unwrap(failure));
+            if (initializedBackend != null) {
+                closeQuietly(initializedBackend);
+            }
+            synchronized (this) {
+                if (!shutdownRequested && state == State.INITIALIZING) {
+                    disable(failureMessage(failure), unwrap(failure));
+                }
+            }
+        } finally {
+            synchronized (this) {
+                if (initThread == Thread.currentThread()) {
+                    initThread = null;
+                }
+            }
         }
+    }
+
+    private static RimeBackend createJnaBackend(RimeRuntimeConfig runtimeConfig) throws Exception {
+        ClassLoader loader = ClientIme.class.getClassLoader();
+        Class.forName("com.sun.jna.Native", false, loader);
+        Class<? extends RimeBackend> backendClass = Class.forName("dev.ingameime.rime.jna.JnaRimeBackend", true, loader)
+            .asSubclass(RimeBackend.class);
+        return backendClass.getConstructor(RimeRuntimeConfig.class)
+            .newInstance(runtimeConfig);
     }
 
     public synchronized boolean handleKeyboardInput(InputTarget target) {
@@ -208,6 +298,10 @@ public final class ClientIme {
     }
 
     public synchronized boolean reloadSchema() {
+        if (state == State.INITIALIZING) {
+            pendingSchemaReload = true;
+            return true;
+        }
         if (state != State.ACTIVE) {
             return false;
         }
@@ -223,9 +317,19 @@ public final class ClientIme {
 
     private void resetItemSearch() {
         itemSearch.reset();
-        itemMatches = new ArrayList<>();
+        clearInlineItemMatches();
+    }
+
+    private void clearInlineItemMatches() {
+        itemMatches = Collections.emptyList();
         itemSelection = -1;
         lastItemQuery = "";
+        lastIndex = ItemNameIndex.EMPTY;
+        lastMatchedSnapshot = RimeSnapshot.EMPTY;
+        cachedBaseSnapshot = RimeSnapshot.EMPTY;
+        cachedItemMatches = Collections.emptyList();
+        cachedItemSelection = -1;
+        cachedViewSnapshot = RimeSnapshot.EMPTY;
     }
 
     private boolean flypy() {
@@ -236,18 +340,54 @@ public final class ClientIme {
         return flypy() || "rime_ice".equals(activeSchemaId);
     }
 
+    private ItemNameIndex currentIndex() {
+        ItemNameIndex index = itemIndex.get();
+        return index == null ? ItemNameIndex.EMPTY : index;
+    }
+
+    private void syncItemSearch() {
+        itemSearch.sync(currentIndex(), flypy());
+    }
+
     private void updateItemMatches() {
-        if (asciiMode || !supportedSearch() || !snapshot.isComposing()) {
-            resetItemSearch();
+        if (asciiMode || !supportedSearch()) {
+            if (itemSearch.isActive() || !itemMatches.isEmpty()
+                || !lastItemQuery.isEmpty()
+                || lastIndex != ItemNameIndex.EMPTY) {
+                resetItemSearch();
+            }
             return;
         }
-        ItemNameIndex index = itemIndex.get();
+        if (itemSearch.isActive()) {
+            clearInlineItemMatches();
+            syncItemSearch();
+            return;
+        }
+        if (!snapshot.isComposing()) {
+            if (!itemMatches.isEmpty() || !lastItemQuery.isEmpty() || lastIndex != ItemNameIndex.EMPTY) {
+                clearInlineItemMatches();
+            }
+            return;
+        }
+        ItemNameIndex index = currentIndex();
+        if (snapshot == lastMatchedSnapshot && index == lastIndex) {
+            return;
+        }
+        lastMatchedSnapshot = snapshot;
         String raw = backend.getRawInput();
         if (!raw.equals(lastItemQuery) || index != lastIndex) {
-            itemMatches = index.search(raw, flypy());
-            for (RimeSnapshot.Candidate candidate : snapshot.getCandidates()) {
-                itemMatches.remove(candidate.getText());
+            List<RimeSnapshot.Candidate> nativeCandidates = snapshot.getCandidates();
+            List<String> matches = index.search(raw, flypy(), ITEM_CANDIDATE_LIMIT + nativeCandidates.size());
+            if (!matches.isEmpty() && !nativeCandidates.isEmpty()) {
+                Set<String> nativeTexts = new HashSet<>(nativeCandidates.size() * 2);
+                for (int i = 0; i < nativeCandidates.size(); i++) {
+                    nativeTexts.add(
+                        nativeCandidates.get(i)
+                            .getText());
+                }
+                matches.removeIf(nativeTexts::contains);
             }
+            itemMatches = matches.isEmpty() ? Collections.emptyList() : matches;
             itemSelection = -1;
             lastItemQuery = raw;
             lastIndex = index;
@@ -264,13 +404,14 @@ public final class ClientIme {
             if (symbol == 0xff1b) {
                 clearComposition();
             } else if (!shortcut && (symbol == ' ' || symbol == 0xff0d)) {
+                syncItemSearch();
                 String selected = itemSearch.selection();
                 if (selected != null) {
                     target.insertText(selected);
                     clearComposition();
                 }
             } else if (!shortcut) {
-                itemSearch.edit(symbol, itemIndex.get(), flypy());
+                itemSearch.edit(symbol, currentIndex(), flypy());
                 if (itemSearch.shouldResumeRime()) {
                     String raw = itemSearch.query();
                     itemSearch.reset();
@@ -291,10 +432,12 @@ public final class ClientIme {
         if ((symbol == ':' && raw.isEmpty()) || (symbol == '+' && !raw.isEmpty())) {
             boolean direct = symbol == ':';
             backend.clearComposition();
-            itemSearch.begin(direct ? "" : raw + "+", direct, itemIndex.get(), flypy());
+            clearInlineItemMatches();
+            itemSearch.begin(direct ? "" : raw + "+", direct, currentIndex(), flypy());
             snapshot = RimeSnapshot.EMPTY;
             return true;
         }
+        updateItemMatches();
         if (!itemMatches.isEmpty()) {
             if (symbol == 0xff54
                 && (itemSelection >= 0 || snapshot.getHighlightedCandidate() >= snapshot.getCandidates()
@@ -318,28 +461,39 @@ public final class ClientIme {
 
     public synchronized RimeSnapshot getSnapshot() {
         if (itemSearch.isActive()) {
+            syncItemSearch();
             return itemSearch.snapshot();
         }
         updateItemMatches();
         if (itemMatches.isEmpty()) {
             return snapshot;
         }
-        List<RimeSnapshot.Candidate> candidates = new ArrayList<>(snapshot.getCandidates());
-        int nativeCount = candidates.size();
-        int start = itemSelection < 0 ? 0 : itemSelection / 5 * 5;
-        for (int i = start; i < Math.min(start + 5, itemMatches.size()); i++) {
-            String text = itemMatches.get(i);
-            candidates.add(new RimeSnapshot.Candidate("", text, ""));
+        if (cachedBaseSnapshot == snapshot && cachedItemMatches == itemMatches
+            && cachedItemSelection == itemSelection) {
+            return cachedViewSnapshot;
         }
-        return new RimeSnapshot(
+        List<RimeSnapshot.Candidate> nativeCandidates = snapshot.getCandidates();
+        int nativeCount = nativeCandidates.size();
+        int start = itemSelection < 0 ? 0 : itemSelection / 5 * 5;
+        int end = Math.min(start + 5, itemMatches.size());
+        List<RimeSnapshot.Candidate> candidates = new ArrayList<>(nativeCount + (end - start));
+        candidates.addAll(nativeCandidates);
+        for (int i = start; i < end; i++) {
+            candidates.add(new RimeSnapshot.Candidate("", itemMatches.get(i), ""));
+        }
+        cachedBaseSnapshot = snapshot;
+        cachedItemMatches = itemMatches;
+        cachedItemSelection = itemSelection;
+        cachedViewSnapshot = new RimeSnapshot(
             snapshot.getPreedit(),
             snapshot.getCursorPosition(),
             snapshot.isComposing(),
             candidates,
             itemSelection < 0 ? snapshot.getHighlightedCandidate() : nativeCount + itemSelection - start);
+        return cachedViewSnapshot;
     }
 
-    public synchronized boolean isActive() {
+    public boolean isActive() {
         return state == State.ACTIVE;
     }
 
@@ -347,7 +501,7 @@ public final class ClientIme {
         return asciiMode;
     }
 
-    public synchronized String getStateName() {
+    public String getStateName() {
         return state.name();
     }
 
@@ -375,9 +529,10 @@ public final class ClientIme {
 
     public synchronized String getModeNotice() {
         if (itemSearch.isActive()) {
-            String key = itemIndex.get()
-                .size() == 0 ? "ingameime.search.build_first"
-                    : itemSearch.selection() == null ? "ingameime.search.no_matches" : "ingameime.search.active";
+            ItemNameIndex index = currentIndex();
+            itemSearch.sync(index, flypy());
+            String key = index.size() == 0 ? "ingameime.search.build_first"
+                : itemSearch.selection() == null ? "ingameime.search.no_matches" : "ingameime.search.active";
             return net.minecraft.util.StatCollector.translateToLocal(key);
         }
         return Config.showModeIndicator && state == State.ACTIVE && System.currentTimeMillis() < modeNoticeUntil
@@ -394,7 +549,7 @@ public final class ClientIme {
             showModeNotice();
         }
         if (!result.getCommitText()
-            .isEmpty()) {
+            .isEmpty() && target != null) {
             target.insertText(result.getCommitText());
         }
         updateItemMatches();
@@ -404,50 +559,37 @@ public final class ClientIme {
         modeNoticeUntil = System.currentTimeMillis() + Config.modeNoticeMillis;
     }
 
-    private synchronized void shutdown() {
-        RimeBackend current = backend;
-        resetItemSearch();
-        backend = null;
-        snapshot = RimeSnapshot.EMPTY;
-        activeSchemaId = "";
-        activeSchemaName = "";
-        asciiMode = false;
-        schemaNoticeUntil = 0;
-        modeNoticeUntil = 0;
-        activeScreen = null;
-        activeTarget = null;
-        inputModeInitialized = false;
-        state = State.DISABLED;
-        if (current != null) {
+    void shutdown() {
+        Thread pendingInit;
+        synchronized (this) {
+            shutdownRequested = true;
+            pendingInit = initThread;
+        }
+        if (pendingInit != null && pendingInit != Thread.currentThread()) {
             try {
-                current.close();
-            } catch (Throwable ignored) {
-                // The process is already terminating.
+                pendingInit.join(SHUTDOWN_JOIN_MILLIS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread()
+                    .interrupt();
             }
+        }
+        RimeBackend current;
+        synchronized (this) {
+            current = backend;
+            resetRuntimeLocked("");
+            state = State.DISABLED;
+        }
+        if (current != null) {
+            closeQuietly(current);
         }
     }
 
     private void disable(String reason, Throwable failure) {
         RimeBackend current = backend;
-        resetItemSearch();
-        backend = null;
-        snapshot = RimeSnapshot.EMPTY;
-        activeSchemaId = "";
-        activeSchemaName = "";
-        asciiMode = false;
-        schemaNoticeUntil = 0;
-        modeNoticeUntil = 0;
-        activeScreen = null;
-        activeTarget = null;
-        inputModeInitialized = false;
-        disableReason = reason;
+        resetRuntimeLocked(reason);
         state = State.DISABLED;
         if (current != null) {
-            try {
-                current.close();
-            } catch (Throwable ignored) {
-                // Keep the original disable reason.
-            }
+            closeQuietly(current);
         }
         if (!disableReasonLogged) {
             disableReasonLogged = true;
@@ -459,9 +601,33 @@ public final class ClientIme {
         }
     }
 
+    private void resetRuntimeLocked(String reason) {
+        resetItemSearch();
+        backend = null;
+        pendingSchemaReload = false;
+        snapshot = RimeSnapshot.EMPTY;
+        activeSchemaId = "";
+        activeSchemaName = "";
+        asciiMode = false;
+        schemaNoticeUntil = 0;
+        modeNoticeUntil = 0;
+        activeScreen = null;
+        activeTarget = null;
+        inputModeInitialized = false;
+        disableReason = reason;
+    }
+
+    private static void closeQuietly(RimeBackend current) {
+        try {
+            current.close();
+        } catch (Throwable ignored) {
+            // Keep original state/reason during cleanup.
+        }
+    }
+
     private void updateSchema(RimeKeyResult result) {
         if (!activeSchemaId.equals(result.getSchemaId())) {
-            Config.saveSchemaId(result.getSchemaId());
+            Config.saveSchemaIdAsync(result.getSchemaId());
             schemaNoticeUntil = System.currentTimeMillis() + SCHEMA_NOTICE_MILLIS;
             InGameIME.LOG.info("InGameIME switched schema to {} ({})", result.getSchemaName(), result.getSchemaId());
         }
@@ -485,8 +651,14 @@ public final class ClientIme {
         return current;
     }
 
+    interface BackendFactory {
+
+        RimeBackend create(RimeRuntimeConfig runtimeConfig) throws Exception;
+    }
+
     private enum State {
         UNINITIALIZED,
+        INITIALIZING,
         ACTIVE,
         DISABLED
     }

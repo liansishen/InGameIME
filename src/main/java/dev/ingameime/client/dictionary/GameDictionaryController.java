@@ -5,6 +5,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -14,6 +15,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.function.Supplier;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.creativetab.CreativeTabs;
@@ -32,34 +34,68 @@ import dev.ingameime.rime.RimeRuntimeConfig;
 
 public final class GameDictionaryController {
 
-    private static final GameDictionaryController INSTANCE = new GameDictionaryController();
-    private static final int ITEMS_PER_TICK = 24;
+    private static final int MAX_ITEMS_PER_TICK = 64;
+    private static final int MAX_VARIANTS_PER_TICK = 256;
+    private static final long MAX_SCAN_NANOS_PER_TICK = 2_500_000L;
     private static final String GENERATOR_VERSION = "4";
+
+    private final Object indexLock = new Object();
     private volatile ItemNameIndex index = ItemNameIndex.EMPTY;
+    private int indexEpoch;
 
     private volatile GameDictionarySnapshot snapshot;
     private volatile boolean cancelRequested;
     private final File stateFile;
+    private final IndexLoader indexLoader;
+    private final Supplier<List<Item>> itemSource;
+    private final Supplier<String> fingerprintSource;
+    private final Supplier<File> userDirectorySource;
+    private final CompletionScheduler completionScheduler;
     private List<Item> items = Collections.emptyList();
     private List<String> rawNames = Collections.emptyList();
+    private List<ItemStack> pendingVariants = Collections.emptyList();
+    private int pendingVariantIndex;
     private int scanIndex;
     private int failedItems;
     private File target;
     private File flypyTarget;
     private String fingerprint = "";
 
+    private static final class Holder {
+
+        private static final GameDictionaryController INSTANCE = new GameDictionaryController();
+    }
+
     private GameDictionaryController() {
-        stateFile = new File(Minecraft.getMinecraft().mcDataDir, "config/ingameime-dictionary.properties");
-        snapshot = loadState();
-        try {
-            index = ItemNameIndex.load(indexFile().toPath());
-        } catch (IOException | RuntimeException failure) {
-            InGameIME.LOG.warn("Could not load item name index", failure);
+        this(
+            Minecraft.getMinecraft().mcDataDir,
+            ItemNameIndex::load,
+            GameDictionaryController::registeredItems,
+            GameDictionaryController::fingerprint,
+            () -> RimeRuntimeConfig.resolve()
+                .getUserDataDirectory(),
+            GameDictionaryController::scheduleOnClientThread);
+    }
+
+    GameDictionaryController(File gameDirectory, IndexLoader indexLoader, Supplier<List<Item>> itemSource,
+        Supplier<String> fingerprintSource, Supplier<File> userDirectorySource,
+        CompletionScheduler completionScheduler) {
+        this.stateFile = new File(gameDirectory, "config/ingameime-dictionary.properties");
+        this.indexLoader = indexLoader;
+        this.itemSource = itemSource;
+        this.fingerprintSource = fingerprintSource;
+        this.userDirectorySource = userDirectorySource;
+        this.completionScheduler = completionScheduler;
+        this.snapshot = loadState();
+        int initialEpoch;
+        synchronized (indexLock) {
+            initialEpoch = indexEpoch;
         }
+        loadIndexAsync(indexFile().toPath(), initialEpoch);
     }
 
     public static GameDictionaryController getInstance() {
-        return INSTANCE;
+        return Holder.INSTANCE;
     }
 
     public GameDictionarySnapshot getSnapshot() {
@@ -70,8 +106,45 @@ public final class GameDictionaryController {
         return index;
     }
 
-    private File indexFile() {
+    File indexFile() {
         return new File(stateFile.getParentFile(), "ingameime-item-index-v1.json");
+    }
+
+    private void loadIndexAsync(Path path, int expectedEpoch) {
+        if (!java.nio.file.Files.isRegularFile(path)) {
+            return;
+        }
+        Thread loader = new Thread(() -> {
+            try {
+                ItemNameIndex loaded = indexLoader.load(path);
+                publishInitialIndex(loaded, expectedEpoch);
+            } catch (IOException | RuntimeException failure) {
+                InGameIME.LOG.warn("Could not load item name index", failure);
+            }
+        }, "InGameIME index loader");
+        loader.setDaemon(true);
+        loader.start();
+    }
+
+    private void publishInitialIndex(ItemNameIndex loaded, int expectedEpoch) {
+        if (loaded == null) {
+            return;
+        }
+        synchronized (indexLock) {
+            if (indexEpoch == expectedEpoch && index == ItemNameIndex.EMPTY) {
+                index = loaded;
+            }
+        }
+    }
+
+    private void publishGeneratedIndex(ItemNameIndex generated) {
+        if (generated == null) {
+            return;
+        }
+        synchronized (indexLock) {
+            indexEpoch++;
+            index = generated;
+        }
     }
 
     public synchronized void startGeneration() {
@@ -81,13 +154,11 @@ public final class GameDictionaryController {
         try {
             target = indexFile();
             flypyTarget = null;
-            fingerprint = fingerprint();
-            items = new ArrayList<>();
-            for (Item item : GameData.getItemRegistry()
-                .typeSafeIterable()) {
-                items.add(item);
-            }
+            fingerprint = fingerprintSource.get();
+            items = new ArrayList<>(itemSource.get());
             rawNames = new ArrayList<>();
+            pendingVariants = Collections.emptyList();
+            pendingVariantIndex = 0;
             scanIndex = 0;
             failedItems = 0;
             cancelRequested = false;
@@ -132,43 +203,85 @@ public final class GameDictionaryController {
     }
 
     @SubscribeEvent
-    public synchronized void onClientTick(TickEvent.ClientTickEvent event) {
+    public void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END || snapshot.getPhase() != GameDictionarySnapshot.Phase.SCANNING) {
             return;
         }
-        if (cancelRequested) {
-            finishCancelled(0, 0, 0, 0, 0, 0, 0, 0);
-            return;
-        }
+        synchronized (this) {
+            if (snapshot.getPhase() != GameDictionarySnapshot.Phase.SCANNING) {
+                return;
+            }
+            if (cancelRequested) {
+                finishCancelled(0, 0, 0, 0, 0, 0, 0, 0);
+                return;
+            }
 
-        int end = Math.min(items.size(), scanIndex + ITEMS_PER_TICK);
-        while (scanIndex < end) {
-            scanItem(items.get(scanIndex));
-            scanIndex++;
-        }
-        publish(
-            new GameDictionarySnapshot(
-                GameDictionarySnapshot.Phase.SCANNING,
-                scanIndex,
-                items.size(),
-                rawNames.size(),
-                0,
-                0,
-                0,
-                0,
-                failedItems,
-                "",
-                target.getAbsolutePath(),
-                fingerprint,
-                System.currentTimeMillis(),
-                false),
-            false);
-        if (scanIndex == items.size()) {
-            startWorker();
+            long deadline = System.nanoTime() + MAX_SCAN_NANOS_PER_TICK;
+            int processedItems = 0;
+            int processedVariants = 0;
+
+            while (scanIndex < items.size() && processedItems < MAX_ITEMS_PER_TICK
+                && processedVariants < MAX_VARIANTS_PER_TICK) {
+                if (pendingVariantIndex < pendingVariants.size()) {
+                    processedVariants += drainPendingVariants(
+                        items.get(scanIndex),
+                        MAX_VARIANTS_PER_TICK - processedVariants,
+                        deadline);
+                    if (pendingVariantIndex >= pendingVariants.size()) {
+                        pendingVariants = Collections.emptyList();
+                        pendingVariantIndex = 0;
+                        scanIndex++;
+                        processedItems++;
+                    }
+                } else {
+                    List<ItemStack> variants = collectVariants(items.get(scanIndex));
+                    if (variants != null) {
+                        pendingVariants = variants;
+                        pendingVariantIndex = 0;
+                        processedVariants += drainPendingVariants(
+                            items.get(scanIndex),
+                            MAX_VARIANTS_PER_TICK - processedVariants,
+                            deadline);
+                        if (pendingVariantIndex >= pendingVariants.size()) {
+                            pendingVariants = Collections.emptyList();
+                            pendingVariantIndex = 0;
+                            scanIndex++;
+                            processedItems++;
+                        }
+                    } else {
+                        scanIndex++;
+                        processedItems++;
+                    }
+                }
+                if (System.nanoTime() >= deadline) {
+                    break;
+                }
+            }
+
+            publish(
+                new GameDictionarySnapshot(
+                    GameDictionarySnapshot.Phase.SCANNING,
+                    scanIndex,
+                    items.size(),
+                    rawNames.size(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    failedItems,
+                    "",
+                    target.getAbsolutePath(),
+                    fingerprint,
+                    System.currentTimeMillis(),
+                    false),
+                false);
+            if (scanIndex == items.size() && pendingVariantIndex >= pendingVariants.size()) {
+                startWorker();
+            }
         }
     }
 
-    private void scanItem(Item item) {
+    private List<ItemStack> collectVariants(Item item) {
         try {
             Map<Integer, ItemStack> variants = new LinkedHashMap<>();
             CreativeTabs[] tabs = item.getCreativeTabs();
@@ -187,19 +300,41 @@ public final class GameDictionaryController {
                 }
             }
             if (variants.isEmpty()) {
-                variants.put(0, new ItemStack(item, 1, 0));
+                return Collections.singletonList(new ItemStack(item, 1, 0));
             }
-            for (ItemStack stack : variants.values()) {
+            return new ArrayList<>(variants.values());
+        } catch (RuntimeException | LinkageError failure) {
+            recordItemFailure(item, failure);
+            return null;
+        }
+    }
+
+    private int drainPendingVariants(Item item, int maxVariants, long deadline) {
+        int count = 0;
+        try {
+            while (pendingVariantIndex < pendingVariants.size() && count < maxVariants) {
+                ItemStack stack = pendingVariants.get(pendingVariantIndex++);
                 rawNames.add(stack.getDisplayName());
+                count++;
+                if ((count & 15) == 0 && System.nanoTime() >= deadline) {
+                    break;
+                }
             }
         } catch (RuntimeException | LinkageError failure) {
-            failedItems++;
-            InGameIME.LOG.warn(
-                "Skipping item {} while generating the game dictionary",
-                GameData.getItemRegistry()
-                    .getNameForObject(item),
-                failure);
+            pendingVariants = Collections.emptyList();
+            pendingVariantIndex = 0;
+            recordItemFailure(item, failure);
         }
+        return Math.max(1, count);
+    }
+
+    private void recordItemFailure(Item item, Throwable failure) {
+        failedItems++;
+        InGameIME.LOG.warn(
+            "Skipping item {} while generating the game dictionary",
+            GameData.getItemRegistry()
+                .getNameForObject(item),
+            failure);
     }
 
     private void startWorker() {
@@ -211,6 +346,8 @@ public final class GameDictionaryController {
         String runFingerprint = fingerprint;
         items = Collections.emptyList();
         rawNames = Collections.emptyList();
+        pendingVariants = Collections.emptyList();
+        pendingVariantIndex = 0;
         publish(
             new GameDictionarySnapshot(
                 GameDictionarySnapshot.Phase.CONVERTING,
@@ -235,7 +372,7 @@ public final class GameDictionaryController {
         worker.start();
     }
 
-    private void runGenerator(List<String> names, int scannedItems, int scanFailures, File output, File flypyOutput,
+    void runGenerator(List<String> names, int scannedItems, int scanFailures, File output, File flypyOutput,
         String runFingerprint) {
         try {
             GameDictionaryGenerator.Result result = GameDictionaryGenerator.generateIndex(
@@ -261,13 +398,13 @@ public final class GameDictionaryController {
                     result.duplicateNames,
                     result.nonChineseNames);
             } else {
-                File userDirectory = RimeRuntimeConfig.resolve()
-                    .getUserDataDirectory();
+                ItemNameIndex generated = indexLoader.load(output.toPath());
+                publishGeneratedIndex(generated);
+                File userDirectory = userDirectorySource.get();
                 for (String legacy : new String[] { "custom_phrase.txt", "custom_phrase_double.txt",
                     "ingameime_game_phrase.txt", "ingameime_game_phrase_flypy.txt" }) {
                     GameDictionaryGenerator.removeGeneratedBlock(new File(userDirectory, legacy));
                 }
-                index = ItemNameIndex.load(output.toPath());
                 scheduleCompletion(names.size(), scannedItems, scanFailures, result, output, runFingerprint);
             }
         } catch (IOException | RuntimeException failure) {
@@ -277,17 +414,16 @@ public final class GameDictionaryController {
 
     private void scheduleCompletion(int total, int scannedItems, int scanFailures,
         GameDictionaryGenerator.Result result, File output, String runFingerprint) {
-        Minecraft.getMinecraft()
-            .func_152344_a(
-                () -> complete(
-                    total,
-                    scannedItems,
-                    scanFailures,
-                    result,
-                    output,
-                    runFingerprint,
-                    !ClientIme.getInstance()
-                        .reloadSchema()));
+        completionScheduler.schedule(
+            () -> complete(
+                total,
+                scannedItems,
+                scanFailures,
+                result,
+                output,
+                runFingerprint,
+                !ClientIme.getInstance()
+                    .reloadSchema()));
     }
 
     private synchronized void updateConverting(int processed, int total, int scannedItems, int scanFailures,
@@ -367,6 +503,8 @@ public final class GameDictionaryController {
         cancelRequested = false;
         items = Collections.emptyList();
         rawNames = Collections.emptyList();
+        pendingVariants = Collections.emptyList();
+        pendingVariantIndex = 0;
         publish(
             new GameDictionarySnapshot(
                 GameDictionarySnapshot.Phase.CANCELLED,
@@ -395,6 +533,8 @@ public final class GameDictionaryController {
         cancelRequested = false;
         items = Collections.emptyList();
         rawNames = Collections.emptyList();
+        pendingVariants = Collections.emptyList();
+        pendingVariantIndex = 0;
         publish(
             new GameDictionarySnapshot(
                 GameDictionarySnapshot.Phase.FAILED,
@@ -536,10 +676,34 @@ public final class GameDictionaryController {
         return Long.parseLong(properties.getProperty(key, "0"));
     }
 
+    private static List<Item> registeredItems() {
+        List<Item> registered = new ArrayList<>();
+        for (Item item : GameData.getItemRegistry()
+            .typeSafeIterable()) {
+            registered.add(item);
+        }
+        return registered;
+    }
+
+    private static void scheduleOnClientThread(Runnable task) {
+        Minecraft.getMinecraft()
+            .func_152344_a(task);
+    }
+
     private static String message(Throwable failure) {
         String value = failure.getMessage();
         return value == null || value.trim()
             .isEmpty() ? failure.getClass()
                 .getSimpleName() : value;
+    }
+
+    interface IndexLoader {
+
+        ItemNameIndex load(Path path) throws IOException;
+    }
+
+    interface CompletionScheduler {
+
+        void schedule(Runnable task);
     }
 }
